@@ -1,0 +1,24 @@
+schema_version = "1.0.0"
+
+id = "halo_pack_editor"
+version = "0.1.3"
+name = "Halo Pack Editor"
+tagline = "Edit and preview Halo Minecraft resource packs"
+maintainer = "AzusaKe"
+type = "add-on"
+
+tags = ["Animation", "Import-Export", "Modeling"]
+blender_version_min = "5.2.0"
+license = ["SPDX:MIT"]
+
+[permissions]
+files = "Import and export Minecraft Halo resource packs"
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  "*.pyc",
+  ".git/",
+  "tests/",
+  "*.zip",
+]
