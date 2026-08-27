@@ -1,15 +1,15 @@
-# Halo Pack Editor 0.1.13 测试报告
+# Halo Pack Editor 0.1.14 测试报告
 
 测试日期：2026-08-27
 宿主：Blender 5.2.0 LTS（`fbe6228777e7`）  
-交付包：`dist/halo_pack_editor-0.1.13.zip`
-SHA-256：`6F750F0B174A7F2B1003DB213B2A3FC13CF84F19D066A05E7E07CD35A90AF64D`
+交付包：`dist/halo_pack_editor-0.1.14.zip`
+SHA-256：`F1DFC07833CC1EC1AFB3E99A277196F03EAF8BFBE5092A6A324C2519CFFA5128`
 
 ## 自动化结果
 
 - 纯 Python：17 项测试全部通过。覆盖未知 JSON 字段与旧式写法保留、ZIP 安全、原子导出、资源路径与 PNG/labPBR、坐标矩阵、YXZ 旋转、动画函数、继承、过渡补值/反演/缓动和 `degrees` 行程。
 - Blender Extension：源码 manifest 校验、ZIP 构建、构建包校验均通过。
-- 全新安装：在 `F:\codex-cache\halo-blender-addon\isolated-0.1.13-20260827` 隔离用户目录中执行 `extension install-file --enable`，确认扩展可加载并注册复制与图元迁移操作器。
+- 全新安装：在 `F:\codex-cache\halo-blender-addon\isolated-0.1.14-20260827` 隔离用户目录中执行 `extension install-file --enable`，确认扩展可加载，组移动的六项和图元迁移的七项携带选项均已注册。
 - Hina：导入 57 个组、29 个图元、至少四层结构；检查 Billboard 法线/UV、Ring 表面数与剔除、材质 Alpha 乘法节点；场景同步、ZIP 往返、原子文件夹往返、保存 `.blend` 与重新打开均通过。
 - Shiroko：startup 与 `id_overrides` 在 Blender 时间轴求值无错误，`degrees` 字段由核心求值器验收；从真实常驻动画通道读取既有项，并通过逐行操作器完成新增、编辑、排序与删除测试。
 - 动画 JSON 编辑：成功把 startup 打开为 Blender Text 数据块，在多行 Text Editor 中修改并通过侧栏操作器重新解析、应用；无效 JSON 会阻止应用并报告错误。
@@ -33,6 +33,7 @@ SHA-256：`6F750F0B174A7F2B1003DB213B2A3FC13CF84F19D066A05E7E07CD35A90AF64D`
 - 0.1.11 阻尼提示与树形编辑：修正三个 factor 的提示方向为“越接近 1 越快”；在真实 Hina 树中确认父级列表包含光环根和合法同定义组，排除当前组及全部子组，并完成保留局部值的“顶层组 → 另一个组 → 光环根”往返。
 - 0.1.12 树形面板可发现性：移除“仅选中组才显示”的面板条件，使“树形编辑”在 3D 视图右侧栏的“Halo 光环”标签中始终可见并提前到动画面板之前；分别为未选择 Halo 对象、光环根、图元和组提供中文引导，图元可一键选择其所属部件组。
 - 0.1.13 复制与图元迁移：在 Hina 真实层级中分别复制完整组子树和单个图元，断言父级不变、所有副本 UUID 唯一且 PropertyGroup UUID 同步、全部复制组 ID 与原树无冲突、未知字段保留。随后把图元副本迁移到另一组下的新属性副本组，断言只移动所选图元，静态变换、常驻动画、未知字段及 startup `id_overrides` 均复制到新组 ID，并清理测试对象后维持 57 组/29 图元的原始导出结果。
+- 0.1.14 移动属性选择：组重设父级和图元迁移的属性选项默认全部启用；另以选择性测试取消位置、缩放、常驻动画、发光/继承和扩展字段，仅保留旋转，确认未选字段重置为 schema 默认值且原局部旋转精确保留。图元迁移另覆盖全部取消，确认新包装组使用单位变换、空动画、默认渲染/继承、删除未知字段且不复制 startup `id_overrides`。
 
 ## 人工验收边界
 

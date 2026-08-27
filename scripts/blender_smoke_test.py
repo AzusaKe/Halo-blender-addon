@@ -127,6 +127,46 @@ assert bpy.ops.halo.reparent(target_uuid=definition_root.get("halo_uuid"), prese
 assert moving_group.parent == definition_root
 assert moving_group.get("halo_parent_uuid") == definition_root.get("halo_uuid")
 
+# Reparent carry checkboxes default to all-on, but unchecked categories reset
+# to schema defaults while selected categories remain local JSON values.
+for selected in bpy.context.selected_objects:
+    selected.select_set(False)
+definition_root.select_set(True)
+bpy.context.view_layer.objects.active = definition_root
+assert bpy.ops.halo.add_group(group_id="carry_selection_test") == {"FINISHED"}
+carry_group = bpy.context.active_object
+carry_group.halo_node.position = (1.25, 2.5, 3.75)
+carry_group.halo_node.rotation = (11.0, 22.0, 33.0)
+carry_group.halo_node.scale = 1.75
+carry_group.halo_node.animation_json = json.dumps({"alpha": [{"type": "linear", "start": 0.5, "speed": 0.0}]})
+carry_group.halo_node.glowing = False
+carry_group.halo_node.inherit_alpha = False
+carry_group.halo_node.inherit_glow = False
+carry_raw = json.loads(carry_group.get("halo_raw_json", "{}"))
+carry_raw["futureCarryField"] = {"drop": True}
+carry_group["halo_raw_json"] = json.dumps(carry_raw, ensure_ascii=False, separators=(",", ":"))
+assert bpy.ops.halo.reparent(
+    target_uuid=target_group.get("halo_uuid"),
+    preserve_world=False,
+    carry_position=False,
+    carry_rotation=True,
+    carry_scale=False,
+    carry_animation=False,
+    carry_render=False,
+    carry_extra=False,
+) == {"FINISHED"}
+assert carry_group.parent == target_group
+assert tuple(carry_group.halo_node.position) == (0.0, 0.0, 0.0)
+assert max(abs(actual - expected) for actual, expected in zip(carry_group.halo_node.rotation, (11.0, 22.0, 33.0))) < 1e-4
+assert float(carry_group.halo_node.scale) == 1.0
+assert json.loads(carry_group.halo_node.animation_json) == {}
+assert carry_group.halo_node.glowing is True
+assert carry_group.halo_node.inherit_alpha is True
+assert carry_group.halo_node.inherit_glow is True
+assert "futureCarryField" not in json.loads(carry_group.get("halo_raw_json", "{}"))
+blender_scene.remove_object_tree(carry_group)
+blender_scene.sync_definition_from_scene(scene, renamed_definition_id)
+
 # The tree panel must remain discoverable for root, primitive and empty
 # selections.  A selected primitive provides a direct jump to its owning
 # group before reparenting.
@@ -229,6 +269,38 @@ assert moved_wrapper.halo_node.animation_json == source_group.halo_node.animatio
 assert json.loads(definition_item.startup_json)["id_overrides"][new_group_id]["futureTransitionField"] == "move-me"
 assert raw_contains_group_id(json.loads(definition_item.raw_json).get("layers", []), new_group_id)
 blender_scene.remove_object_tree(moved_wrapper)
+
+# A second migration opts out of every copied category.  The wrapper receives
+# schema defaults, drops unknown fields and does not receive id_overrides.
+for selected in bpy.context.selected_objects:
+    selected.select_set(False)
+primitive_copy_source.select_set(True)
+bpy.context.view_layer.objects.active = primitive_copy_source
+assert bpy.ops.halo.duplicate_node() == {"FINISHED"}
+selective_primitive = bpy.context.active_object
+selective_group_id = operators._unique_group_id(renamed_definition_id, (source_group.halo_node.node_id or "group") + "_selective_test")
+assert bpy.ops.halo.move_primitive(
+    target_uuid=move_target.get("halo_uuid"),
+    new_group_id=selective_group_id,
+    carry_position=False,
+    carry_rotation=False,
+    carry_scale=False,
+    carry_animation=False,
+    carry_render=False,
+    carry_extra=False,
+    carry_transition=False,
+) == {"FINISHED"}
+selective_wrapper = selective_primitive.parent
+assert tuple(selective_wrapper.halo_node.position) == (0.0, 0.0, 0.0)
+assert tuple(selective_wrapper.halo_node.rotation) == (0.0, 0.0, 0.0)
+assert float(selective_wrapper.halo_node.scale) == 1.0
+assert json.loads(selective_wrapper.halo_node.animation_json) == {}
+assert selective_wrapper.halo_node.glowing is True
+assert selective_wrapper.halo_node.inherit_alpha is True
+assert selective_wrapper.halo_node.inherit_glow is True
+assert "futureMoveField" not in json.loads(selective_wrapper.get("halo_raw_json", "{}"))
+assert selective_group_id not in json.loads(definition_item.startup_json).get("id_overrides", {})
+blender_scene.remove_object_tree(selective_wrapper)
 definition_item.startup_json = saved_startup_json
 source_group_raw = json.loads(source_group.get("halo_raw_json", "{}"))
 source_group_raw.pop("futureMoveField", None)

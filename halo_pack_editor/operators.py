@@ -250,6 +250,105 @@ def _copy_transition_overrides(scene, definition_id: str, id_pairs: list[tuple[s
             setattr(item, property_name, json.dumps(document, ensure_ascii=False, indent=2))
 
 
+_GROUP_STANDARD_KEYS = {
+    "id", "position", "rotation", "scale", "animation",
+    "glowing", "inherit_alpha", "inherit_glow",
+    "children", "primitives", "primitive",
+}
+
+
+def _selected_group_property_copy(
+    source_raw: Mapping[str, Any],
+    new_group_id: str,
+    *,
+    carry_position: bool,
+    carry_rotation: bool,
+    carry_scale: bool,
+    carry_animation: bool,
+    carry_render: bool,
+    carry_extra: bool,
+) -> dict[str, Any]:
+    """Copy selected group properties while always excluding tree contents."""
+
+    if carry_extra:
+        raw = copy.deepcopy(dict(source_raw))
+    else:
+        raw = {
+            key: copy.deepcopy(value)
+            for key, value in source_raw.items()
+            if key in _GROUP_STANDARD_KEYS
+        }
+    for key in ("children", "primitives", "primitive"):
+        raw.pop(key, None)
+    raw["id"] = new_group_id
+    if not carry_position:
+        raw["position"] = [0.0, 0.0, 0.0]
+    if not carry_rotation:
+        raw["rotation"] = [0.0, 0.0, 0.0]
+    if not carry_scale:
+        raw["scale"] = 1.0
+    if not carry_animation:
+        raw.pop("animation", None)
+    if not carry_render:
+        raw.pop("glowing", None)
+        raw.pop("inherit_alpha", None)
+        raw.pop("inherit_glow", None)
+    return raw
+
+
+def _apply_group_property_selection(
+    obj,
+    *,
+    carry_position: bool,
+    carry_rotation: bool,
+    carry_scale: bool,
+    carry_animation: bool,
+    carry_render: bool,
+    carry_extra: bool,
+):
+    """Reset unchecked carried fields on an already reparented group."""
+
+    node = getattr(obj, "halo_node", None)
+    if node is None:
+        return
+    obj["halo_property_update_guard"] = True
+    try:
+        if not carry_position:
+            node.position = (0.0, 0.0, 0.0)
+        if not carry_rotation:
+            node.rotation = (0.0, 0.0, 0.0)
+        if not carry_scale:
+            node.scale = 1.0
+        if not carry_animation:
+            node.animation_json = "{}"
+            obj["halo_animation_json"] = "{}"
+        if not carry_render:
+            node.glowing = True
+            node.inherit_alpha = True
+            node.inherit_glow = True
+    finally:
+        obj.pop("halo_property_update_guard", None)
+    raw = blender_scene._sync_group(obj)
+    if not carry_extra:
+        raw = {key: value for key, value in raw.items() if key in _GROUP_STANDARD_KEYS}
+        obj["halo_raw_json"] = json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
+        node.raw_json = json.dumps(raw, ensure_ascii=False, indent=2)
+
+
+def _draw_carry_options(layout, operator, *, include_transition: bool):
+    box = layout.box()
+    box.label(text="移动时携带的组属性", icon="PROPERTIES")
+    grid = box.grid_flow(row_major=True, columns=2, even_columns=True, align=True)
+    grid.prop(operator, "carry_position")
+    grid.prop(operator, "carry_rotation")
+    grid.prop(operator, "carry_scale")
+    grid.prop(operator, "carry_animation")
+    grid.prop(operator, "carry_render")
+    grid.prop(operator, "carry_extra")
+    if include_transition:
+        grid.prop(operator, "carry_transition")
+
+
 def _animation_owner(context):
     obj = _active_object(context)
     if obj is not None and obj.get("halo_role") == PRIMITIVE_ROLE and obj.parent is not None:
@@ -836,6 +935,12 @@ if bpy is not None:
             description="重新计算局部 JSON 变换，使移动父级前后的世界位置和朝向不变；关闭后保留原局部 JSON 值",
             default=True,
         )
+        carry_position: BoolProperty(name="位置", description="携带位置；取消后移动完成时重置为 [0, 0, 0]", default=True, options={"SKIP_SAVE"})
+        carry_rotation: BoolProperty(name="旋转", description="携带旋转；取消后移动完成时重置为 [0, 0, 0]", default=True, options={"SKIP_SAVE"})
+        carry_scale: BoolProperty(name="缩放", description="携带统一缩放；取消后移动完成时重置为 1", default=True, options={"SKIP_SAVE"})
+        carry_animation: BoolProperty(name="常驻动画", description="携带组内 animation；取消后清空常驻动画", default=True, options={"SKIP_SAVE"})
+        carry_render: BoolProperty(name="发光与继承", description="携带 glowing、inherit_alpha 和 inherit_glow；取消后使用默认值 true", default=True, options={"SKIP_SAVE"})
+        carry_extra: BoolProperty(name="扩展/未知字段", description="携带标准编辑器尚未识别的组字段", default=True, options={"SKIP_SAVE"})
 
         @classmethod
         def poll(cls, context):
@@ -859,6 +964,9 @@ if bpy is not None:
             layout.label(text=f"移动组：{_group_display_name(obj)}", icon="CONSTRAINT_BONE")
             layout.prop(self, "target_uuid")
             layout.prop(self, "preserve_world")
+            _draw_carry_options(layout, self, include_transition=False)
+            if self.preserve_world and not (self.carry_position and self.carry_rotation and self.carry_scale):
+                layout.label(text="未携带的变换会在保持世界外观后重置", icon="INFO")
 
         def execute(self, context):
             obj = _active_object(context)
@@ -866,8 +974,30 @@ if bpy is not None:
             if obj is None or target is None:
                 self.report({"ERROR"}, "请选择组和有效的新父级")
                 return {"CANCELLED"}
+            node = getattr(obj, "halo_node", None)
+            local_snapshot = None
+            if node is not None:
+                local_snapshot = (tuple(node.position), tuple(node.rotation), float(node.scale))
             try:
                 reparent_object(obj, target, self.preserve_world)
+                if not self.preserve_world and node is not None and local_snapshot is not None:
+                    obj["halo_property_update_guard"] = True
+                    try:
+                        node.position = local_snapshot[0]
+                        node.rotation = local_snapshot[1]
+                        node.scale = local_snapshot[2]
+                    finally:
+                        obj.pop("halo_property_update_guard", None)
+                _apply_group_property_selection(
+                    obj,
+                    carry_position=self.carry_position,
+                    carry_rotation=self.carry_rotation,
+                    carry_scale=self.carry_scale,
+                    carry_animation=self.carry_animation,
+                    carry_render=self.carry_render,
+                    carry_extra=self.carry_extra,
+                )
+                sync_definition_from_scene(context.scene, obj.get("halo_definition_id", ""))
             except Exception as exc:
                 self.report({"ERROR"}, str(exc))
                 return {"CANCELLED"}
@@ -892,6 +1022,13 @@ if bpy is not None:
             description="用于承载被迁移图元的新组 ID；必须在当前光环定义中唯一",
             default="",
         )
+        carry_position: BoolProperty(name="位置", description="把原所属组的位置复制到新组", default=True, options={"SKIP_SAVE"})
+        carry_rotation: BoolProperty(name="旋转", description="把原所属组的旋转复制到新组", default=True, options={"SKIP_SAVE"})
+        carry_scale: BoolProperty(name="缩放", description="把原所属组的统一缩放复制到新组", default=True, options={"SKIP_SAVE"})
+        carry_animation: BoolProperty(name="常驻动画", description="把原所属组的 animation 复制到新组", default=True, options={"SKIP_SAVE"})
+        carry_render: BoolProperty(name="发光与继承", description="复制 glowing、inherit_alpha 和 inherit_glow", default=True, options={"SKIP_SAVE"})
+        carry_extra: BoolProperty(name="扩展/未知字段", description="复制标准编辑器尚未识别的组字段", default=True, options={"SKIP_SAVE"})
+        carry_transition: BoolProperty(name="启动/关闭过渡", description="把原组 ID 的 startup/shutdown id_overrides 复制到新组 ID", default=True, options={"SKIP_SAVE"})
 
         @classmethod
         def poll(cls, context):
@@ -921,9 +1058,8 @@ if bpy is not None:
             layout.label(text=f"原所属组：{_group_display_name(source_group)}", icon="OUTLINER_OB_EMPTY")
             layout.prop(self, "target_uuid")
             layout.prop(self, "new_group_id")
-            box = layout.box()
-            box.label(text="将复制原组的变换、动画和继承属性", icon="INFO")
-            box.label(text="不会复制原组中的其他图元或子组")
+            _draw_carry_options(layout, self, include_transition=True)
+            layout.label(text="不会复制原组中的其他图元或子组", icon="INFO")
 
         def execute(self, context):
             primitive = _active_object(context)
@@ -956,10 +1092,17 @@ if bpy is not None:
                 return {"CANCELLED"}
 
             try:
-                raw = copy.deepcopy(blender_scene._sync_group(source_group))
-                for key in ("children", "primitives", "primitive"):
-                    raw.pop(key, None)
-                raw["id"] = new_group_id
+                source_raw = blender_scene._sync_group(source_group)
+                raw = _selected_group_property_copy(
+                    source_raw,
+                    new_group_id,
+                    carry_position=self.carry_position,
+                    carry_rotation=self.carry_rotation,
+                    carry_scale=self.carry_scale,
+                    carry_animation=self.carry_animation,
+                    carry_render=self.carry_render,
+                    carry_extra=self.carry_extra,
+                )
                 collection = target.users_collection[0] if target.users_collection else blender_scene._ensure_collection(context.scene)
                 new_group = blender_scene._make_group(
                     collection,
@@ -969,7 +1112,7 @@ if bpy is not None:
                     f"manual/moved/{uuid.uuid4().hex[:12]}",
                 )
                 source_group_id = str(getattr(getattr(source_group, "halo_node", None), "node_id", "") or "").strip()
-                if source_group_id:
+                if source_group_id and self.carry_transition:
                     _copy_transition_overrides(context.scene, definition_id, [(source_group_id, new_group_id)])
                 primitive.parent = new_group
                 blender_scene.reset_primitive_transform(primitive)
