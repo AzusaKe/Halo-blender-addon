@@ -1,6 +1,6 @@
 [project]
 name = "halo-pack-editor"
-version = "0.1.14"
+version = "0.1.15"
 description = "Blender extension for editing Halo Minecraft resource packs"
 requires-python = ">=3.11"
 license = { text = "MIT" }

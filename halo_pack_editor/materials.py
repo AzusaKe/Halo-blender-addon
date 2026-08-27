@@ -59,24 +59,42 @@ def _set_socket(node, names: Iterable[str], value):
 
 
 def _set_blend_mode(material):
-    # Preserve the 0.1.0 compatibility path exactly.  In Blender 5.2 the
-    # legacy blend_method assignment below maps to BLENDED, while transparent
-    # overlap and transparent-back rendering remain disabled.
+    # Blender 5.2's DITHERED method uses hashed per-pixel transparency and
+    # avoids BLENDED's object-order sorting failure.  Do not write the legacy
+    # blend_method after surface_render_method: BLEND maps back to BLENDED and
+    # silently undoes the setting above.
+    configured = False
     if hasattr(material, "surface_render_method"):
         try:
             material.surface_render_method = "DITHERED"
-        except (TypeError, ValueError):
-            try:
-                material.surface_render_method = "BLENDED"
-            except (TypeError, ValueError):
-                pass
-    if hasattr(material, "blend_method"):
-        try:
-            material.blend_method = "BLEND"
+            configured = True
         except (TypeError, ValueError):
             pass
+    if not configured and hasattr(material, "blend_method"):
+        try:
+            material.blend_method = "HASHED"
+        except (TypeError, ValueError):
+            try:
+                material.blend_method = "BLEND"
+            except (TypeError, ValueError):
+                pass
     if hasattr(material, "use_transparency_overlap"):
         material.use_transparency_overlap = False
+    material["halo_preview_render_method"] = "EEVEE_DITHERED"
+
+
+def refresh_halo_material_settings():
+    """Upgrade materials stored by older extension versions in-place."""
+
+    import bpy
+
+    refreshed = 0
+    for material in bpy.data.materials:
+        if not material.get("halo_texture_id"):
+            continue
+        _set_blend_mode(material)
+        refreshed += 1
+    return refreshed
 
 
 def _new_placeholder_image(texture_id: str):
@@ -275,6 +293,7 @@ __all__ = [
     "assign_material",
     "assign_primitive_materials",
     "set_material_visual",
+    "refresh_halo_material_settings",
     "texture_destination",
     "copy_texture_with_sidecars",
 ]

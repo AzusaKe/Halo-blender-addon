@@ -566,7 +566,9 @@ if bpy is not None:
         for scene in bpy.data.scenes:
             try:
                 from .blender_scene import enforce_managed_transform_locks, update_preview_roots
+                from .materials import refresh_halo_material_settings
                 enforce_managed_transform_locks(scene, restore=True)
+                refresh_halo_material_settings()
                 # Rebuild the non-animated anchor pose before evaluating files
                 # saved by an older build that has no cached base transform.
                 update_preview_roots(scene)
@@ -608,7 +610,9 @@ def register_handlers():
     for scene in scenes:
         try:
             from .blender_scene import enforce_managed_transform_locks
+            from .materials import refresh_halo_material_settings
             enforce_managed_transform_locks(scene, restore=True)
+            refresh_halo_material_settings()
         except Exception:
             pass
     if _VIEW_DRAW_HANDLE is None:

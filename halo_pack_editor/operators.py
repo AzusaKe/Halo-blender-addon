@@ -38,6 +38,7 @@ from .geometry import billboard_mesh, mc_rotation_quaternion, ring_mesh
 from .materials import (
     assign_primitive_materials,
     copy_texture_with_sidecars,
+    refresh_halo_material_settings,
     split_resource_id,
 )
 from .properties import EASING_ITEMS, TRANSITION_DEFAULT_GROUP
@@ -1309,6 +1310,23 @@ if bpy is not None:
             return {"FINISHED"}
 
 
+    class HALO_OT_configure_eevee_preview(bpy.types.Operator):
+        bl_idname = "halo.configure_eevee_preview"
+        bl_label = "启用 EEVEE 一致性预览"
+        bl_description = "切换到 EEVEE，并把全部 Halo 材质设置为不会产生对象排序遮挡的抖动透明"
+        bl_options = {"REGISTER", "UNDO"}
+
+        def execute(self, context):
+            try:
+                context.scene.render.engine = "BLENDER_EEVEE"
+            except (TypeError, ValueError) as exc:
+                self.report({"ERROR"}, f"当前 Blender 无法启用 EEVEE：{exc}")
+                return {"CANCELLED"}
+            count = refresh_halo_material_settings()
+            self.report({"INFO"}, f"EEVEE 一致性预览已启用，刷新 {count} 个 Halo 材质")
+            return {"FINISHED"}
+
+
     class HALO_OT_play_preview(bpy.types.Operator):
         bl_idname = "halo.play_preview"
         bl_label = "播放动画预览"
@@ -1971,6 +1989,7 @@ if bpy is not None:
         HALO_OT_apply_raw_json,
         HALO_OT_sync_scene,
         HALO_OT_set_preview_space,
+        HALO_OT_configure_eevee_preview,
         HALO_OT_play_preview,
         HALO_OT_stop_preview,
         HALO_OT_animation_term_add,

@@ -1,15 +1,15 @@
-# Halo Pack Editor 0.1.14 测试报告
+# Halo Pack Editor 0.1.15 测试报告
 
 测试日期：2026-08-27
 宿主：Blender 5.2.0 LTS（`fbe6228777e7`）  
-交付包：`dist/halo_pack_editor-0.1.14.zip`
-SHA-256：`F1DFC07833CC1EC1AFB3E99A277196F03EAF8BFBE5092A6A324C2519CFFA5128`
+交付包：`dist/halo_pack_editor-0.1.15.zip`
+SHA-256：`6528D2A722715A9357860A2875D60CFBF6B3665C3C758DF8A9C508EF004E8764`
 
 ## 自动化结果
 
 - 纯 Python：17 项测试全部通过。覆盖未知 JSON 字段与旧式写法保留、ZIP 安全、原子导出、资源路径与 PNG/labPBR、坐标矩阵、YXZ 旋转、动画函数、继承、过渡补值/反演/缓动和 `degrees` 行程。
 - Blender Extension：源码 manifest 校验、ZIP 构建、构建包校验均通过。
-- 全新安装：在 `F:\codex-cache\halo-blender-addon\isolated-0.1.14-20260827` 隔离用户目录中执行 `extension install-file --enable`，确认扩展可加载，组移动的六项和图元迁移的七项携带选项均已注册。
+- 全新安装：在 `F:\codex-cache\halo-blender-addon\isolated-0.1.15-20260827` 隔离用户目录中执行 `extension install-file --enable`，确认扩展可加载、材质保持 DITHERED，并可执行 EEVEE 一致性预览操作器。
 - Hina：导入 57 个组、29 个图元、至少四层结构；检查 Billboard 法线/UV、Ring 表面数与剔除、材质 Alpha 乘法节点；场景同步、ZIP 往返、原子文件夹往返、保存 `.blend` 与重新打开均通过。
 - Shiroko：startup 与 `id_overrides` 在 Blender 时间轴求值无错误，`degrees` 字段由核心求值器验收；从真实常驻动画通道读取既有项，并通过逐行操作器完成新增、编辑、排序与删除测试。
 - 动画 JSON 编辑：成功把 startup 打开为 Blender Text 数据块，在多行 Text Editor 中修改并通过侧栏操作器重新解析、应用；无效 JSON 会阻止应用并报告错误。
@@ -19,7 +19,7 @@ SHA-256：`F1DFC07833CC1EC1AFB3E99A277196F03EAF8BFBE5092A6A324C2519CFFA5128`
 - Ring_default：确认文件名与内部 ID 不一致时以内置 ID 为准，并产生预期缺贴图警告。
 - 合并包：Blender 导入 60 个定义、导出 ZIP、核心重新导入 60 个定义；164 个资源文件保留，7 条诊断均为样例中的预期缺贴图。
 - Java 交叉验证：使用 `F:\Halo` 已编译的 `HaloDefinitionDeserializer` 只读解析 Blender 导出的合并包，结果 `JAVA_PARSER_OK 60`。
-- 0.1.2 视觉修复继续保留：Billboard 与 Ring 的全部 UV 均断言执行 Minecraft→Blender 的 V 轴翻转；透明重叠和透明背面维持 0.1.0 的关闭状态，仅保留材质方向修复。
+- 0.1.2 视觉修复继续保留：Billboard 与 Ring 的全部 UV 均断言执行 Minecraft→Blender 的 V 轴翻转。
 - 0.1.3 动画编辑 UI：现有常驻动画项会直接列出；面板不再暴露内部项索引；选择图元时会自动编辑其父组动画；startup/shutdown 使用真正的多行 Text Editor，而不是单行字符串字段。
 - 0.1.5 面板权威变换：Root、Group、Primitive 的原生 G/R/S 均锁定；即使脚本强行修改 Group 对象，场景同步和导出仍以面板 MC 位置/YXZ 旋转/统一缩放为准并恢复对象外观。
 - 0.1.5 粗调/细调：断言可切换两组独立步长，并通过各轴 `−/+` 操作器精确修改所属组变换，结果即时写入预览与 JSON。
@@ -34,6 +34,7 @@ SHA-256：`F1DFC07833CC1EC1AFB3E99A277196F03EAF8BFBE5092A6A324C2519CFFA5128`
 - 0.1.12 树形面板可发现性：移除“仅选中组才显示”的面板条件，使“树形编辑”在 3D 视图右侧栏的“Halo 光环”标签中始终可见并提前到动画面板之前；分别为未选择 Halo 对象、光环根、图元和组提供中文引导，图元可一键选择其所属部件组。
 - 0.1.13 复制与图元迁移：在 Hina 真实层级中分别复制完整组子树和单个图元，断言父级不变、所有副本 UUID 唯一且 PropertyGroup UUID 同步、全部复制组 ID 与原树无冲突、未知字段保留。随后把图元副本迁移到另一组下的新属性副本组，断言只移动所选图元，静态变换、常驻动画、未知字段及 startup `id_overrides` 均复制到新组 ID，并清理测试对象后维持 57 组/29 图元的原始导出结果。
 - 0.1.14 移动属性选择：组重设父级和图元迁移的属性选项默认全部启用；另以选择性测试取消位置、缩放、常驻动画、发光/继承和扩展字段，仅保留旋转，确认未选字段重置为 schema 默认值且原局部旋转精确保留。图元迁移另覆盖全部取消，确认新包装组使用单位变换、空动画、默认渲染/继承、删除未知字段且不复制 startup `id_overrides`。
+- 0.1.15 EEVEE 一致性预览：修复 Blender 5.2 中旧 `blend_method=BLEND` 覆盖 `surface_render_method=DITHERED` 的问题；断言新建和旧场景升级后的全部 Halo 材质均保持抖动透明。新增真实离屏渲染测试：两个同原点图元前后重叠时，前图透明半幅正确显示绿色后图而非世界背景；显式内外纹理 Ring 从外部观察只显示红色外表面，蓝色共面内表面被背面剔除。
 
 ## 人工验收边界
 

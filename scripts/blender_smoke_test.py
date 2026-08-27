@@ -328,10 +328,17 @@ for primitive in primitives:
         outer_uv = [tuple(round(value, 5) for value in loop.uv) for loop in primitive.data.uv_layers[0].data[:4]]
         assert outer_uv[0] == (0.0, 1.0) and outer_uv[3] == (0.0, 0.0), outer_uv
     material = primitive.data.materials[0]
-    assert material.surface_render_method == "BLENDED"
+    assert material.surface_render_method == "DITHERED"
+    assert material.get("halo_preview_render_method") == "EEVEE_DITHERED"
     assert not material.use_transparency_overlap
     assert not material.show_transparent_back
     assert any(node.name == "Halo Preview Alpha" for node in material.node_tree.nodes)
+
+legacy_material = primitives[0].data.materials[0]
+legacy_material.surface_render_method = "BLENDED"
+assert bpy.ops.halo.configure_eevee_preview() == {"FINISHED"}
+assert scene.render.engine == "BLENDER_EEVEE"
+assert legacy_material.surface_render_method == "DITHERED"
 
 # Ring outer/inner textures have separate file-picker targets.  Clearing the
 # inner texture returns to one double-sided surface; importing an inner PNG
