@@ -536,6 +536,16 @@ if bpy is not None:
         fine_scale_step: FloatProperty(name="细调缩放步长", default=0.01, min=0.00001, precision=5)
         raw_text_name: StringProperty(name="JSON 文本块", default="", options={"HIDDEN"})
         validation_json: StringProperty(name="验证结果", default="")
+        mesh_conversion_active: BoolProperty(name="Mesh 转换进行中", default=False, options={"HIDDEN", "SKIP_SAVE"})
+        mesh_conversion_progress: FloatProperty(
+            name="转换进度", default=0.0, min=0.0, max=1.0, subtype="FACTOR", options={"HIDDEN", "SKIP_SAVE"},
+        )
+        mesh_conversion_completed: IntProperty(name="已完成面簇", default=0, min=0, options={"HIDDEN", "SKIP_SAVE"})
+        mesh_conversion_total: IntProperty(name="面簇总数", default=0, min=0, options={"HIDDEN", "SKIP_SAVE"})
+        mesh_conversion_status: StringProperty(name="转换状态", default="", options={"HIDDEN", "SKIP_SAVE"})
+        mesh_conversion_cancel_requested: BoolProperty(
+            name="请求取消 Mesh 转换", default=False, options={"HIDDEN", "SKIP_SAVE"},
+        )
         definitions: CollectionProperty(type=HaloDefinitionPG)
 
 

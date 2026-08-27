@@ -21,7 +21,7 @@ from halo_pack_editor import blender_scene, handlers, operators, panels
 from halo_pack_editor.core.pack_io import import_pack
 from halo_pack_editor.geometry import mc_rotation_quaternion, mc_to_blender, ring_mesh
 from halo_pack_editor.materials import assign_material, create_halo_material, resolve_texture_path
-from halo_pack_editor.mesh_conversion import _coplanar_clusters, _expand_polygon_border
+from halo_pack_editor.mesh_conversion import _coplanar_clusters, _expand_polygon_border, iter_mesh_conversion
 
 
 halo_pack_editor.register()
@@ -98,6 +98,27 @@ for selected in bpy.context.selected_objects:
 conversion_parent = groups[0]
 conversion_parent.select_set(True)
 bpy.context.view_layer.objects.active = conversion_parent
+# The UI consumes the same iterator one cluster per timer event.  Closing it
+# after the first baked cluster must clean all packed images/temp data without
+# ever creating a partial Halo wrapper tree.
+generated_before_cancel = {image.name for image in bpy.data.images if image.get("halo_generated_texture")}
+children_before_cancel = set(conversion_parent.children)
+cancel_iterator = iter_mesh_conversion(
+    bpy.context,
+    source_object,
+    conversion_parent,
+    texture_resolution=16,
+    apply_modifiers=True,
+    edge_padding=0,
+    merge_coplanar=True,
+)
+prepared_update = next(cancel_iterator)
+assert prepared_update["phase"] == "PREPARED" and prepared_update["total"] == 2
+baked_update = next(cancel_iterator)
+assert baked_update["phase"] == "BAKING" and baked_update["completed"] == 1
+cancel_iterator.close()
+assert {image.name for image in bpy.data.images if image.get("halo_generated_texture")} == generated_before_cancel
+assert set(conversion_parent.children) == children_before_cancel
 assert bpy.ops.halo.convert_mesh(
     source_object=source_object.name,
     texture_resolution=32,

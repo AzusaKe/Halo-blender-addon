@@ -473,7 +473,7 @@ def _unique_group_id(definition_id: str, base: str, reserved: set[str]) -> str:
     return candidate
 
 
-def convert_mesh_to_halo(
+def iter_mesh_conversion(
     context,
     source_obj,
     parent,
@@ -484,7 +484,7 @@ def convert_mesh_to_halo(
     edge_padding: int = 2,
     merge_coplanar: bool = True,
 ):
-    """Bake and convert all usable source faces under a new Halo wrapper group."""
+    """Yield after preparation and every baked surface, then return the result."""
 
     if source_obj is None or source_obj.type != "MESH":
         raise ValueError("请选择一个网格对象")
@@ -509,11 +509,9 @@ def convert_mesh_to_halo(
     created_paths: list[str] = []
     created_images: list[object] = []
     wrapper = None
-    context.window_manager.progress_begin(0, max(1, len(mesh.polygons)))
     try:
         valid_polygons = []
-        for progress, polygon in enumerate(mesh.polygons, 1):
-            context.window_manager.progress_update(progress)
+        for polygon in mesh.polygons:
             try:
                 face_rectangle = minimum_face_rectangle([mesh.vertices[index].co for index in polygon.vertices], polygon.normal)
             except ValueError as exc:
@@ -523,10 +521,15 @@ def convert_mesh_to_halo(
                 warnings.append(f"面 {polygon.index}: 非平面误差 {face_rectangle.non_planar_error:.6g}，已投影到拟合平面")
             valid_polygons.append(polygon)
         clusters = _coplanar_clusters(mesh, valid_polygons, merge_coplanar)
-        context.window_manager.progress_end()
-        context.window_manager.progress_begin(0, max(1, len(clusters)))
+        if not clusters:
+            raise ValueError("网格没有可转换的有效面")
+        yield {
+            "phase": "PREPARED",
+            "completed": 0,
+            "total": len(clusters),
+            "source_faces": len(valid_polygons),
+        }
         for progress, cluster in enumerate(clusters, 1):
-            context.window_manager.progress_update(progress)
             first_index = cluster[0].index
             rectangle = minimum_face_rectangle(
                 [mesh.vertices[index].co for polygon in cluster for index in polygon.vertices],
@@ -552,6 +555,12 @@ def convert_mesh_to_halo(
             created_images.append(image)
             baked.append((cluster, rectangle, texture_id, str(destination)))
             created_paths.append(str(destination))
+            yield {
+                "phase": "BAKING",
+                "completed": progress,
+                "total": len(clusters),
+                "source_faces": len(valid_polygons),
+            }
         if not baked:
             raise ValueError("网格没有可转换的有效面")
 
@@ -614,7 +623,7 @@ def convert_mesh_to_halo(
             export_paths,
             warnings,
         )
-    except Exception:
+    except BaseException:
         if wrapper is not None and wrapper.name in bpy.data.objects:
             objects_to_remove = []
             stack = [wrapper]
@@ -643,15 +652,45 @@ def convert_mesh_to_halo(
                 bpy.data.images.remove(image)
         raise
     finally:
-        context.window_manager.progress_end()
         shutil.rmtree(bake_root, ignore_errors=True)
         if apply_modifiers:
             evaluated_obj.to_mesh_clear()
+
+
+def convert_mesh_to_halo(
+    context,
+    source_obj,
+    parent,
+    *,
+    texture_resolution: int = 256,
+    apply_modifiers: bool = True,
+    bake_mode: str = "AUTO",
+    edge_padding: int = 2,
+    merge_coplanar: bool = True,
+):
+    """Synchronously consume the incremental converter for scripts/tests."""
+
+    iterator = iter_mesh_conversion(
+        context,
+        source_obj,
+        parent,
+        texture_resolution=texture_resolution,
+        apply_modifiers=apply_modifiers,
+        bake_mode=bake_mode,
+        edge_padding=edge_padding,
+        merge_coplanar=merge_coplanar,
+    )
+    while True:
+        try:
+            next(iterator)
+        except StopIteration as finished:
+            return finished.value
 
 
 __all__ = [
     "FaceRectangle",
     "MeshConversionResult",
     "minimum_face_rectangle",
+    "iter_mesh_conversion",
     "convert_mesh_to_halo",
 ]

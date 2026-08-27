@@ -190,6 +190,29 @@ if bpy is not None:
 
         def draw(self, context):
             layout = self.layout
+            project = context.scene.halo_project
+            if project.mesh_conversion_active or project.mesh_conversion_status:
+                progress_box = layout.box()
+                progress_box.label(
+                    text="Mesh 转换任务" if project.mesh_conversion_active else "上次 Mesh 转换",
+                    icon="TIME" if project.mesh_conversion_active else "CHECKMARK",
+                )
+                progress_row = progress_box.row()
+                progress_row.enabled = False
+                progress_row.prop(
+                    project,
+                    "mesh_conversion_progress",
+                    text=f"{project.mesh_conversion_progress * 100.0:.0f}%",
+                    slider=True,
+                )
+                progress_box.label(text=project.mesh_conversion_status or "等待进度更新")
+                if project.mesh_conversion_active:
+                    if project.mesh_conversion_total:
+                        progress_box.label(
+                            text=f"面簇 {project.mesh_conversion_completed}/{project.mesh_conversion_total}"
+                        )
+                    progress_box.operator("halo.cancel_mesh_conversion", text="取消转换", icon="CANCEL")
+                    progress_box.label(text="可切换窗口；当前单张烘焙完成后响应取消", icon="INFO")
             obj = context.active_object
             role = obj.get("halo_role")
             if role == "definition_root":

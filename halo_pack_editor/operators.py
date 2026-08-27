@@ -41,7 +41,7 @@ from .materials import (
     refresh_halo_material_settings,
     split_resource_id,
 )
-from .mesh_conversion import convert_mesh_to_halo
+from .mesh_conversion import convert_mesh_to_halo, iter_mesh_conversion
 from .properties import EASING_ITEMS, TRANSITION_DEFAULT_GROUP
 
 
@@ -75,6 +75,15 @@ def _select_object(context, obj):
 _REPARENT_TARGET_ITEMS: list[tuple[str, str, str]] = []
 _PRIMITIVE_MOVE_TARGET_ITEMS: list[tuple[str, str, str]] = []
 _MESH_SOURCE_ITEMS: list[tuple[str, str, str]] = []
+
+
+def _redraw_all_windows(context):
+    window_manager = getattr(context, "window_manager", None)
+    if window_manager is None:
+        return
+    for window in window_manager.windows:
+        for area in window.screen.areas:
+            area.tag_redraw()
 
 
 def _mesh_source_items(_self, context):
@@ -876,6 +885,7 @@ if bpy is not None:
             description="把同材质、同朝向、共面且共享边的面合并为一张贴图和一个 Billboard，以消除内部接缝",
             default=True,
         )
+        interactive: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
 
         @classmethod
         def poll(cls, context):
@@ -899,7 +909,122 @@ if bpy is not None:
             items = _mesh_source_items(self, context)
             if items:
                 self.source_object = items[0][0]
+            self.interactive = True
             return context.window_manager.invoke_props_dialog(self, width=500)
+
+        def _set_progress(self, context, *, active, progress, completed, total, status):
+            project = self._project
+            project.mesh_conversion_active = bool(active)
+            project.mesh_conversion_progress = max(0.0, min(1.0, float(progress)))
+            project.mesh_conversion_completed = max(0, int(completed))
+            project.mesh_conversion_total = max(0, int(total))
+            project.mesh_conversion_status = str(status)
+            if active and getattr(context, "workspace", None) is not None:
+                context.workspace.status_text_set(
+                    f"Halo Mesh 转换：{completed}/{total} · {status} · Esc 或侧栏按钮取消"
+                )
+            elif getattr(context, "workspace", None) is not None:
+                context.workspace.status_text_set(None)
+            _redraw_all_windows(context)
+
+        def _stop_timer(self, context):
+            timer = getattr(self, "_timer", None)
+            if timer is not None:
+                try:
+                    context.window_manager.event_timer_remove(timer)
+                except Exception:
+                    pass
+                self._timer = None
+
+        def _cancel_conversion(self, context):
+            iterator = getattr(self, "_iterator", None)
+            if iterator is not None:
+                try:
+                    iterator.close()
+                except Exception:
+                    pass
+                self._iterator = None
+            self._stop_timer(context)
+            completed = int(self._project.mesh_conversion_completed)
+            total = int(self._project.mesh_conversion_total)
+            self._set_progress(
+                context,
+                active=False,
+                progress=(completed / total) if total else 0.0,
+                completed=completed,
+                total=total,
+                status="已取消；未完成的转换数据已清理",
+            )
+            self.report({"WARNING"}, "Mesh 转换已取消")
+            return {"CANCELLED"}
+
+        def modal(self, context, event):
+            if event.type == "ESC" or self._project.mesh_conversion_cancel_requested:
+                self._project.mesh_conversion_cancel_requested = False
+                return self._cancel_conversion(context)
+            if event.type != "TIMER":
+                return {"PASS_THROUGH"}
+            try:
+                update = next(self._iterator)
+            except StopIteration as finished:
+                self._iterator = None
+                self._stop_timer(context)
+                result = finished.value
+                _select_object(context, result.wrapper)
+                total = len(result.texture_ids)
+                self._set_progress(
+                    context,
+                    active=False,
+                    progress=1.0,
+                    completed=total,
+                    total=total,
+                    status=f"完成：{result.face_count} 个源面 → {total} 张贴图",
+                )
+                if result.warnings:
+                    self.report({"WARNING"}, f"已转换 {result.face_count} 个面；另有 {len(result.warnings)} 条警告")
+                else:
+                    self.report({"INFO"}, f"已转换 {result.face_count} 个面并烘焙 {total} 张贴图")
+                return {"FINISHED"}
+            except Exception as exc:
+                iterator = getattr(self, "_iterator", None)
+                if iterator is not None:
+                    try:
+                        iterator.close()
+                    except Exception:
+                        pass
+                self._iterator = None
+                self._stop_timer(context)
+                self._set_progress(
+                    context,
+                    active=False,
+                    progress=0.0,
+                    completed=0,
+                    total=0,
+                    status=f"失败：{exc}",
+                )
+                self.report({"ERROR"}, f"Mesh 转换失败：{exc}")
+                return {"CANCELLED"}
+            completed = int(update.get("completed", 0))
+            total = int(update.get("total", 0))
+            phase = str(update.get("phase", ""))
+            status = (
+                f"已分析 {int(update.get('source_faces', 0))} 个有效面，准备烘焙"
+                if phase == "PREPARED"
+                else f"正在烘焙面簇 {completed}/{total}"
+            )
+            self._set_progress(
+                context,
+                active=True,
+                progress=(completed / total) if total else 0.0,
+                completed=completed,
+                total=total,
+                status=status,
+            )
+            return {"RUNNING_MODAL"}
+
+        def cancel(self, context):
+            if getattr(self, "_iterator", None) is not None:
+                self._cancel_conversion(context)
 
         def execute(self, context):
             source = context.scene.objects.get(self.source_object) if self.source_object != "__NONE__" else None
@@ -912,6 +1037,34 @@ if bpy is not None:
             if parent is None or parent.get("halo_role") not in {ROOT_ROLE, GROUP_ROLE}:
                 self.report({"ERROR"}, "请选择光环根、部件组或其图元作为目标位置")
                 return {"CANCELLED"}
+            if self.interactive and context.window is not None:
+                project = context.scene.halo_project
+                if project.mesh_conversion_active:
+                    self.report({"ERROR"}, "已有一个 Mesh 转换任务正在运行")
+                    return {"CANCELLED"}
+                self._project = project
+                project.mesh_conversion_cancel_requested = False
+                self._iterator = iter_mesh_conversion(
+                    context,
+                    source,
+                    parent,
+                    texture_resolution=self.texture_resolution,
+                    apply_modifiers=self.apply_modifiers,
+                    bake_mode=self.bake_mode,
+                    edge_padding=self.edge_padding,
+                    merge_coplanar=self.merge_coplanar,
+                )
+                self._timer = context.window_manager.event_timer_add(0.05, window=context.window)
+                context.window_manager.modal_handler_add(self)
+                self._set_progress(
+                    context,
+                    active=True,
+                    progress=0.0,
+                    completed=0,
+                    total=0,
+                    status="正在分析网格与共面面簇",
+                )
+                return {"RUNNING_MODAL"}
             try:
                 result = convert_mesh_to_halo(
                     context,
@@ -931,6 +1084,21 @@ if bpy is not None:
                 self.report({"WARNING"}, f"已转换 {result.face_count} 个面；另有 {len(result.warnings)} 条警告")
             else:
                 self.report({"INFO"}, f"已转换 {result.face_count} 个面并烘焙 {len(result.texture_ids)} 张贴图")
+            return {"FINISHED"}
+
+
+    class HALO_OT_cancel_mesh_conversion(bpy.types.Operator):
+        bl_idname = "halo.cancel_mesh_conversion"
+        bl_label = "取消 Mesh 转换"
+        bl_description = "在当前面簇烘焙结束后取消任务，并清理已经生成的临时贴图"
+
+        @classmethod
+        def poll(cls, context):
+            return bool(context.scene.halo_project.mesh_conversion_active)
+
+        def execute(self, context):
+            context.scene.halo_project.mesh_conversion_cancel_requested = True
+            self.report({"INFO"}, "已请求取消；当前面簇完成后停止")
             return {"FINISHED"}
 
 
@@ -2103,6 +2271,7 @@ if bpy is not None:
         HALO_OT_add_group,
         HALO_OT_add_primitive,
         HALO_OT_convert_mesh,
+        HALO_OT_cancel_mesh_conversion,
         HALO_OT_select_parent_group,
         HALO_OT_nudge_transform,
         HALO_OT_duplicate_node,
