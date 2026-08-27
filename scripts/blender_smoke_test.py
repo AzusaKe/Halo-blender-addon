@@ -21,6 +21,7 @@ from halo_pack_editor import blender_scene, handlers, operators, panels
 from halo_pack_editor.core.pack_io import import_pack
 from halo_pack_editor.geometry import mc_rotation_quaternion, mc_to_blender, ring_mesh
 from halo_pack_editor.materials import assign_material, create_halo_material, resolve_texture_path
+from halo_pack_editor.mesh_conversion import _coplanar_clusters, _expand_polygon_border
 
 
 halo_pack_editor.register()
@@ -42,16 +43,17 @@ assert len(primitives) == 29, len(primitives)
 source_mesh = bpy.data.meshes.new("Mesh Conversion Triangle")
 source_mesh.from_pydata(
     [
-        (0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (0.0, 1.0, 0.0),
+        (0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (0.0, 1.0, 0.0), (2.0, 1.0, 0.0),
         (3.0, 0.0, 0.0), (3.0, 1.0, 0.0), (3.0, 1.0, 2.0), (3.0, 0.0, 2.0),
     ],
     [],
-    [(0, 1, 2), (3, 4, 5, 6)],
+    [(0, 1, 2), (1, 3, 2), (4, 5, 6, 7)],
 )
 source_mesh.update()
 source_uv = source_mesh.uv_layers.new(name="UVMap")
 for loop, uv in zip(source_uv.data, (
     (0.55, 0.55), (0.95, 0.55), (0.55, 0.95),
+    (0.95, 0.55), (0.95, 0.95), (0.55, 0.95),
     (0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0),
 )):
     loop.uv = uv
@@ -88,7 +90,9 @@ source_material_blue.use_nodes = True
 source_shader_blue = next(node for node in source_material_blue.node_tree.nodes if node.bl_idname == "ShaderNodeBsdfPrincipled")
 source_shader_blue.inputs["Base Color"].default_value = (0.1, 0.2, 0.9, 1.0)
 source_mesh.materials.append(source_material_blue)
-source_mesh.polygons[1].material_index = 1
+source_mesh.polygons[2].material_index = 1
+assert sorted(len(cluster) for cluster in _coplanar_clusters(source_mesh, source_mesh.polygons, True)) == [1, 2]
+assert len(_coplanar_clusters(source_mesh, source_mesh.polygons, False)) == 3
 for selected in bpy.context.selected_objects:
     selected.select_set(False)
 conversion_parent = groups[0]
@@ -99,6 +103,7 @@ assert bpy.ops.halo.convert_mesh(
     texture_resolution=32,
     apply_modifiers=True,
     edge_padding=2,
+    merge_coplanar=True,
 ) == {"FINISHED"}
 converted_wrapper = bpy.context.active_object
 assert converted_wrapper.get("halo_role") == "group"
@@ -136,8 +141,9 @@ assert converted_image.packed_file is not None
 # Conversion is copy-on-write: the imported source pack remains untouched.
 assert resolve_texture_path(converted_primitive.halo_node.texture, scene.halo_project.pack_root) is None
 alpha_values = list(converted_image.pixels)[3::4]
-assert min(alpha_values) < 0.05 and max(alpha_values) > 0.95
-assert sum(value > 0.95 for value in alpha_values) > len(alpha_values) * 0.5
+# The two coplanar source triangles form one rectangle.  Their shared diagonal
+# must disappear completely in the one merged alpha image.
+assert min(alpha_values) > 0.95
 converted_pixels = list(converted_image.pixels)
 opaque_red = 0.0
 opaque_green = 0.0
@@ -152,6 +158,23 @@ opaque_green_values = [
     if converted_pixels[offset + 3] > 0.9
 ]
 assert max(opaque_green_values) - min(opaque_green_values) < 1.0e-6
+
+# Exact RGBA edge padding remains covered independently of the merged-quad
+# test: two 8-neighbor rings around one seed produce a 5x5 block without any
+# averaging or darkening.
+padding_pixels = [0.0] * (7 * 7 * 4)
+padding_mask = [0.0] * (7 * 7)
+padding_seed = 3 * 7 + 3
+padding_mask[padding_seed] = 1.0
+padding_pixels[padding_seed * 4:padding_seed * 4 + 4] = [0.2, 0.7, 0.4, 1.0]
+_expand_polygon_border(padding_pixels, padding_mask, 7, 7, 2)
+padding_visible = [
+    tuple(padding_pixels[offset:offset + 4])
+    for offset in range(0, len(padding_pixels), 4)
+    if padding_pixels[offset + 3] > 0.95
+]
+assert len(padding_visible) == 25
+assert set(padding_visible) == {(0.2, 0.7, 0.4, 1.0)}
 vertical_image = next(node.image for node in vertical_primitive.data.materials[0].node_tree.nodes if node.bl_idname == "ShaderNodeTexImage")
 vertical_pixels = list(vertical_image.pixels)
 center_offset = ((int(vertical_image.size[1]) // 2) * int(vertical_image.size[0]) + int(vertical_image.size[0]) // 2) * 4

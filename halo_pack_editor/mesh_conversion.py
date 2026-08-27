@@ -136,6 +136,61 @@ def _texture_size(rectangle: FaceRectangle, maximum: int) -> tuple[int, int]:
     )
 
 
+def _rectangle_uv(rectangle: FaceRectangle, point) -> tuple[float, float]:
+    offset = Vector(point) - rectangle.center
+    return (
+        0.5 + offset.dot(rectangle.axis_u) / rectangle.width,
+        0.5 + offset.dot(rectangle.axis_v) / rectangle.height,
+    )
+
+
+def _coplanar_clusters(mesh, polygons, enabled: bool) -> list[list[object]]:
+    """Group edge-connected, same-material polygons on the same oriented plane."""
+
+    polygons = list(polygons)
+    if not enabled:
+        return [[polygon] for polygon in polygons]
+    by_index = {polygon.index: polygon for polygon in polygons}
+    parent = {polygon.index: polygon.index for polygon in polygons}
+
+    def find(index):
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left, right):
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    if mesh.vertices:
+        coordinates = [vertex.co for vertex in mesh.vertices]
+        span = max((point - coordinates[0]).length for point in coordinates)
+    else:
+        span = 1.0
+    plane_tolerance = max(1.0e-6, span * 1.0e-6)
+    edge_users: dict[tuple[int, int], list[object]] = {}
+    for polygon in polygons:
+        for edge in polygon.edge_keys:
+            edge_users.setdefault(tuple(sorted(edge)), []).append(polygon)
+    for users in edge_users.values():
+        for left_index in range(len(users)):
+            left = users[left_index]
+            for right in users[left_index + 1:]:
+                if left.material_index != right.material_index:
+                    continue
+                if left.normal.dot(right.normal) < 1.0 - 1.0e-6:
+                    continue
+                if abs((right.center - left.center).dot(left.normal)) > plane_tolerance:
+                    continue
+                union(left.index, right.index)
+    grouped: dict[int, list[object]] = {}
+    for polygon_index, polygon in by_index.items():
+        grouped.setdefault(find(polygon_index), []).append(polygon)
+    return [sorted(cluster, key=lambda polygon: polygon.index) for cluster in grouped.values()]
+
+
 def _make_bake_material(source, source_uv_name: str | None):
     material = source.copy() if source is not None else bpy.data.materials.new("Halo Mesh Bake Default")
     material.use_nodes = True
@@ -228,11 +283,11 @@ def _active_output(nodes):
     )
 
 
-def _bake_face_texture(
+def _bake_surface_texture(
     context,
     source_obj,
     source_mesh,
-    polygon,
+    polygons,
     rectangle: FaceRectangle,
     destination: Path,
     texture_id: str,
@@ -240,24 +295,37 @@ def _bake_face_texture(
     bake_mode: str,
     edge_padding: int,
 ):
-    """Bake one polygon's color and Principled alpha to a transparent PNG."""
+    """Bake one coplanar polygon cluster to a single transparent PNG."""
 
     token = uuid.uuid4().hex[:10]
+    polygons = list(polygons)
+    if not polygons:
+        raise ValueError("待烘焙面簇为空")
     source_uv_layer = source_mesh.uv_layers.active if source_mesh.uv_layers else None
     source_uv_name = source_uv_layer.name if source_uv_layer is not None else None
-    vertices = [source_mesh.vertices[index].co.copy() for index in polygon.vertices]
+    vertices = []
+    faces = []
+    source_loop_indices = []
+    target_polygon_uvs = []
+    for polygon in polygons:
+        start = len(vertices)
+        polygon_vertices = [source_mesh.vertices[index].co.copy() for index in polygon.vertices]
+        vertices.extend(polygon_vertices)
+        faces.append(tuple(range(start, start + len(polygon_vertices))))
+        source_loop_indices.extend(polygon.loop_indices)
+        target_polygon_uvs.append([_rectangle_uv(rectangle, point) for point in polygon_vertices])
     temp_mesh = bpy.data.meshes.new(f"Halo Mesh Bake {token}")
-    temp_mesh.from_pydata(vertices, [], [tuple(range(len(vertices)))])
+    temp_mesh.from_pydata(vertices, [], faces)
     temp_mesh.update()
     copied_uv_layers = {}
     for source_layer in source_mesh.uv_layers:
         copied_layer = temp_mesh.uv_layers.new(name=source_layer.name)
-        for target_loop, source_loop_index in zip(copied_layer.data, polygon.loop_indices):
+        for target_loop, source_loop_index in zip(copied_layer.data, source_loop_indices):
             target_loop.uv = source_layer.data[source_loop_index].uv
         copied_uv_layers[source_layer.name] = copied_layer
     copied_uv = copied_uv_layers.get(source_uv_name)
     target_uv = temp_mesh.uv_layers.new(name="Halo Bake Target")
-    for loop, uv in zip(target_uv.data, rectangle.uvs):
+    for loop, uv in zip(target_uv.data, [uv for polygon_uvs in target_polygon_uvs for uv in polygon_uvs]):
         loop.uv = uv
     # ShaderNodeTexCoord's generic UV output reads the active render layer.
     # Keep that pointing at the copied source UV so linked materials sample
@@ -274,8 +342,9 @@ def _bake_face_texture(
     temp_obj = bpy.data.objects.new(f"Halo Mesh Bake {token}", temp_mesh)
     context.scene.collection.objects.link(temp_obj)
     source_material = None
-    if polygon.material_index < len(source_obj.material_slots):
-        source_material = source_obj.material_slots[polygon.material_index].material
+    material_index = polygons[0].material_index
+    if material_index < len(source_obj.material_slots):
+        source_material = source_obj.material_slots[material_index].material
     bake_material = _make_bake_material(source_material, source_uv_name)
     temp_mesh.materials.append(bake_material)
     width, height = _texture_size(rectangle, resolution)
@@ -330,7 +399,10 @@ def _bake_face_texture(
 
         output = _active_output(nodes)
         principled = surface_source if surface_source is not None and surface_source.bl_idname == "ShaderNodeBsdfPrincipled" else None
-        polygon_mask = _opaque_polygon_mask(width, height, rectangle.uvs)
+        polygon_mask = [0.0] * (width * height)
+        for polygon_uvs in target_polygon_uvs:
+            face_mask = _opaque_polygon_mask(width, height, polygon_uvs)
+            polygon_mask = [max(existing, incoming) for existing, incoming in zip(polygon_mask, face_mask)]
         if output is not None and principled is not None:
             target_node.image = alpha_image
             alpha_socket = principled.inputs.get("Alpha")
@@ -410,6 +482,7 @@ def convert_mesh_to_halo(
     apply_modifiers: bool = True,
     bake_mode: str = "AUTO",
     edge_padding: int = 2,
+    merge_coplanar: bool = True,
 ):
     """Bake and convert all usable source faces under a new Halo wrapper group."""
 
@@ -431,29 +504,41 @@ def convert_mesh_to_halo(
 
     evaluated_obj = source_obj.evaluated_get(context.evaluated_depsgraph_get()) if apply_modifiers else source_obj
     mesh = evaluated_obj.to_mesh(preserve_all_data_layers=True, depsgraph=context.evaluated_depsgraph_get()) if apply_modifiers else source_obj.data
-    baked: list[tuple[object, FaceRectangle, str, str]] = []
+    baked: list[tuple[list[object], FaceRectangle, str, str]] = []
     warnings: list[str] = []
     created_paths: list[str] = []
     created_images: list[object] = []
     wrapper = None
     context.window_manager.progress_begin(0, max(1, len(mesh.polygons)))
     try:
+        valid_polygons = []
         for progress, polygon in enumerate(mesh.polygons, 1):
             context.window_manager.progress_update(progress)
             try:
-                rectangle = minimum_face_rectangle([mesh.vertices[index].co for index in polygon.vertices], polygon.normal)
+                face_rectangle = minimum_face_rectangle([mesh.vertices[index].co for index in polygon.vertices], polygon.normal)
             except ValueError as exc:
                 warnings.append(f"面 {polygon.index}: {exc}，已跳过")
                 continue
-            if rectangle.non_planar_error > max(rectangle.width, rectangle.height) * 1.0e-4:
-                warnings.append(f"面 {polygon.index}: 非平面误差 {rectangle.non_planar_error:.6g}，已投影到拟合平面")
-            texture_id = f"{namespace}:{resource_folder}/face_{polygon.index:04d}.png"
-            destination = bake_root / f"face_{polygon.index:04d}.png"
-            image = _bake_face_texture(
+            if face_rectangle.non_planar_error > max(face_rectangle.width, face_rectangle.height) * 1.0e-4:
+                warnings.append(f"面 {polygon.index}: 非平面误差 {face_rectangle.non_planar_error:.6g}，已投影到拟合平面")
+            valid_polygons.append(polygon)
+        clusters = _coplanar_clusters(mesh, valid_polygons, merge_coplanar)
+        context.window_manager.progress_end()
+        context.window_manager.progress_begin(0, max(1, len(clusters)))
+        for progress, cluster in enumerate(clusters, 1):
+            context.window_manager.progress_update(progress)
+            first_index = cluster[0].index
+            rectangle = minimum_face_rectangle(
+                [mesh.vertices[index].co for polygon in cluster for index in polygon.vertices],
+                cluster[0].normal,
+            )
+            texture_id = f"{namespace}:{resource_folder}/face_{first_index:04d}.png"
+            destination = bake_root / f"face_{first_index:04d}.png"
+            image = _bake_surface_texture(
                 context,
                 evaluated_obj,
                 mesh,
-                polygon,
+                cluster,
                 rectangle,
                 destination,
                 texture_id,
@@ -465,7 +550,7 @@ def convert_mesh_to_halo(
             image.pack()
             image.filepath_raw = ""
             created_images.append(image)
-            baked.append((polygon, rectangle, texture_id, str(destination)))
+            baked.append((cluster, rectangle, texture_id, str(destination)))
             created_paths.append(str(destination))
         if not baked:
             raise ValueError("网格没有可转换的有效面")
@@ -483,7 +568,7 @@ def convert_mesh_to_halo(
         }
         wrapper = blender_scene._make_group(collection, parent, wrapper_raw, definition_id, f"mesh/{token}")
         wrapper.name = source_obj.name
-        for face_number, (_polygon, rectangle, texture_id, _destination) in enumerate(baked):
+        for face_number, (_cluster, rectangle, texture_id, _destination) in enumerate(baked):
             face_id = _unique_group_id(definition_id, f"{wrapper_id}_face_{face_number + 1}", reserved)
             # Billboard local X follows the rectangle U axis.  Local Y follows
             # -V so its authored -Z normal points along the source face normal.
@@ -519,10 +604,16 @@ def convert_mesh_to_halo(
             )
         blender_scene.sync_definition_from_scene(context.scene, definition_id)
         export_paths = []
-        for _polygon, _rectangle, texture_id, _destination in baked:
+        for _cluster, _rectangle, texture_id, _destination in baked:
             texture_namespace, texture_relative = texture_id.split(":", 1)
             export_paths.append(f"assets/{texture_namespace}/{texture_relative}")
-        return MeshConversionResult(wrapper, len(baked), [item[2] for item in baked], export_paths, warnings)
+        return MeshConversionResult(
+            wrapper,
+            sum(len(cluster) for cluster, _rectangle, _texture_id, _destination in baked),
+            [item[2] for item in baked],
+            export_paths,
+            warnings,
+        )
     except Exception:
         if wrapper is not None and wrapper.name in bpy.data.objects:
             objects_to_remove = []

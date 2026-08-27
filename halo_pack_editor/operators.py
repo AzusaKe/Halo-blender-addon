@@ -871,6 +871,11 @@ if bpy is not None:
             min=0,
             max=64,
         )
+        merge_coplanar: BoolProperty(
+            name="合并共面相邻面",
+            description="把同材质、同朝向、共面且共享边的面合并为一张贴图和一个 Billboard，以消除内部接缝",
+            default=True,
+        )
 
         @classmethod
         def poll(cls, context):
@@ -884,8 +889,9 @@ if bpy is not None:
             layout.prop(self, "apply_modifiers")
             layout.prop(self, "bake_mode")
             layout.prop(self, "edge_padding")
+            layout.prop(self, "merge_coplanar")
             box = layout.box()
-            box.label(text="每个有效面 → 一个扁平子组 + Billboard", icon="MESH_PLANE")
+            box.label(text="每个有效面簇 → 一个扁平子组 + Billboard", icon="MESH_PLANE")
             box.label(text="使用源 Mesh 的局部坐标；忽略对象 G/R/S", icon="ORIENTATION_LOCAL")
             box.label(text="非矩形区域以透明像素保留轮廓")
 
@@ -915,6 +921,7 @@ if bpy is not None:
                     apply_modifiers=self.apply_modifiers,
                     bake_mode=self.bake_mode,
                     edge_padding=self.edge_padding,
+                    merge_coplanar=self.merge_coplanar,
                 )
             except Exception as exc:
                 self.report({"ERROR"}, f"Mesh 转换失败：{exc}")
