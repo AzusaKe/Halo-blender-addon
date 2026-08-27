@@ -131,6 +131,15 @@ def _vec(value: Any, size: int, default: Iterable[float]) -> list[float]:
     return result
 
 
+def _number(value: Any, default: float) -> float:
+    """Convert a JSON number without treating the valid value zero as absent."""
+
+    try:
+        return float(default if value is None else value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
 def _as_group_dict(value: Any) -> dict[str, Any]:
     raw = _as_dict(value)
     if raw:
@@ -317,33 +326,37 @@ def _store_node_props(obj, raw: Mapping[str, Any], definition_id: str, role: str
     obj["halo_parent_uuid"] = getattr(obj.parent, "get", lambda *_: "")("halo_uuid", "") if obj.parent else ""
     node = getattr(obj, "halo_node", None)
     if node is not None:
-        node.uuid = node_uuid
-        node.definition_id = definition_id
-        node.role = role if role in {"group", "primitive"} else "group"
-        node.node_id = str(raw.get("id", obj.name))
-        position = _vec(raw.get("position"), 3, (0, 0, 0))
-        rotation = _vec(raw.get("rotation"), 3, (0, 0, 0))
-        node.position = position
-        node.rotation = rotation
-        node.scale = float(raw.get("scale", 1.0) or 1.0)
-        node.glowing = bool(raw.get("glowing", True))
-        node.inherit_alpha = bool(raw.get("inherit_alpha", True))
-        node.inherit_glow = bool(raw.get("inherit_glow", True))
-        node.raw_json = json.dumps(dict(raw), ensure_ascii=False, indent=2)
-        node.parent_uuid = obj.parent.get("halo_uuid", "") if obj.parent else ""
-        animation = raw.get("animation", {})
-        node.animation_json = json.dumps(animation, ensure_ascii=False, indent=2) if animation else "{}"
-        if primitive is not None:
-            node.primitive_type = str(primitive.get("type", "billboard"))
-            node.texture = str(primitive.get("texture", primitive.get("outer_texture", "")))
-            node.inner_texture = str(primitive.get("inner_texture", ""))
-            node.size = _vec(primitive.get("size"), 2, (1.0, 1.0))
-            node.segments = int(primitive.get("segments", 32) or 32)
-            node.face_camera = bool(primitive.get("face_camera", False))
-            obj["halo_primitive_raw_json"] = json.dumps(dict(primitive), ensure_ascii=False, separators=(",", ":"))
-            obj["halo_texture_id"] = node.texture
-            obj["halo_inner_texture_id"] = node.inner_texture
-            obj["halo_face_camera"] = node.face_camera
+        obj["halo_property_update_guard"] = True
+        try:
+            node.uuid = node_uuid
+            node.definition_id = definition_id
+            node.role = role if role in {"group", "primitive"} else "group"
+            node.node_id = str(raw.get("id", "")) if role == GROUP_ROLE else ""
+            position = _vec(raw.get("position"), 3, (0, 0, 0))
+            rotation = _vec(raw.get("rotation"), 3, (0, 0, 0))
+            node.position = position
+            node.rotation = rotation
+            node.scale = float(raw.get("scale", 1.0) or 1.0)
+            node.glowing = bool(raw.get("glowing", True))
+            node.inherit_alpha = bool(raw.get("inherit_alpha", True))
+            node.inherit_glow = bool(raw.get("inherit_glow", True))
+            node.raw_json = json.dumps(dict(raw), ensure_ascii=False, indent=2)
+            node.parent_uuid = obj.parent.get("halo_uuid", "") if obj.parent else ""
+            animation = raw.get("animation", {})
+            node.animation_json = json.dumps(animation, ensure_ascii=False, indent=2) if animation else "{}"
+            if primitive is not None:
+                node.primitive_type = str(primitive.get("type", "billboard"))
+                node.texture = str(primitive.get("texture", primitive.get("outer_texture", "")))
+                node.inner_texture = str(primitive.get("inner_texture", ""))
+                node.size = _vec(primitive.get("size"), 2, (1.0, 1.0))
+                node.segments = int(primitive.get("segments", 32) or 32)
+                node.face_camera = bool(primitive.get("face_camera", False))
+                obj["halo_primitive_raw_json"] = json.dumps(dict(primitive), ensure_ascii=False, separators=(",", ":"))
+                obj["halo_texture_id"] = node.texture
+                obj["halo_inner_texture_id"] = node.inner_texture
+                obj["halo_face_camera"] = node.face_camera
+        finally:
+            obj.pop("halo_property_update_guard", None)
     obj["halo_animation_json"] = json.dumps(raw.get("animation", {}), ensure_ascii=False, separators=(",", ":"))
 
 
@@ -366,6 +379,50 @@ def _set_group_transform(obj, raw: Mapping[str, Any]):
     obj.scale = (scale, scale, scale)
 
 
+def _lock_managed_transform(obj):
+    """Prevent native G/R/S from creating unsaved schema-incompatible state."""
+
+    obj.lock_location = (True, True, True)
+    obj.lock_rotation = (True, True, True)
+    obj.lock_rotation_w = True
+    obj.lock_scale = (True, True, True)
+    obj["halo_transform_panel_owned"] = True
+
+
+def reset_primitive_transform(obj):
+    """Restore a primitive Mesh to its schema-defined identity transform."""
+
+    obj["halo_property_update_guard"] = True
+    try:
+        obj.location = (0.0, 0.0, 0.0)
+        obj.rotation_mode = "QUATERNION"
+        obj.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+        obj.scale = (1.0, 1.0, 1.0)
+        _lock_managed_transform(obj)
+    finally:
+        obj.pop("halo_property_update_guard", None)
+
+
+def enforce_managed_transform_locks(scene, restore: bool = True):
+    """Apply panel-owned transform policy to imported and reopened objects."""
+
+    for obj in bpy.data.objects:
+        role = obj.get("halo_role")
+        if role not in {ROOT_ROLE, GROUP_ROLE, PRIMITIVE_ROLE}:
+            continue
+        _lock_managed_transform(obj)
+        if not restore:
+            continue
+        if role == GROUP_ROLE and getattr(obj, "halo_node", None) is not None:
+            _set_group_transform(obj, {
+                "position": list(obj.halo_node.position),
+                "rotation": list(obj.halo_node.rotation),
+                "scale": float(obj.halo_node.scale),
+            })
+        elif role == PRIMITIVE_ROLE:
+            reset_primitive_transform(obj)
+
+
 def _make_primitive(collection, group_obj, primitive: Mapping[str, Any], definition_id: str, path: str, glowing=True):
     primitive = dict(primitive)
     primitive_type = str(primitive.get("type", "billboard")).lower()
@@ -385,10 +442,7 @@ def _make_primitive(collection, group_obj, primitive: Mapping[str, Any], definit
     obj = bpy.data.objects.new(obj_name, mesh)
     collection.objects.link(obj)
     obj.parent = group_obj
-    obj.location = (0.0, 0.0, 0.0)
-    obj.rotation_mode = "QUATERNION"
-    obj.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
-    obj.scale = (1.0, 1.0, 1.0)
+    reset_primitive_transform(obj)
     primitive_uuid = _deterministic_uuid(definition_id, path)
     _store_node_props(obj, primitive, definition_id, PRIMITIVE_ROLE, primitive_uuid, primitive)
     obj["halo_primitive_index"] = int(path.rsplit("/", 1)[-1]) if path.rsplit("/", 1)[-1].isdigit() else 0
@@ -407,6 +461,7 @@ def _make_group(collection, parent, raw: Mapping[str, Any], definition_id: str, 
     _set_group_transform(obj, raw)
     node_uuid = _deterministic_uuid(definition_id, path)
     _store_node_props(obj, raw, definition_id, GROUP_ROLE, node_uuid)
+    _lock_managed_transform(obj)
     obj["halo_path"] = path
     obj["halo_original_has_id"] = "id" in raw
     obj["halo_original_primitives_key"] = "primitives" if "primitives" in raw else "primitive" if "primitive" in raw else ""
@@ -457,12 +512,12 @@ def _create_definition_pg(scene, definition_id: str, raw: Mapping[str, Any], sou
     item.hide_on_sleep = bool(raw.get("hide_on_sleep", False))
     item.display_in_invisible = bool(raw.get("display_in_invisible", False))
     damping = raw.get("damping") if isinstance(raw.get("damping"), Mapping) else {}
-    item.damping_linear_factor = float(damping.get("linearFactor", 0.15) or 0.15)
-    item.damping_angular_factor = float(damping.get("angularFactor", 0.1) or 0.1)
-    item.damping_max_linear = float(damping.get("maxLinearDistance", 3.0) or 3.0)
-    item.damping_max_angular = float(damping.get("maxAngularDegrees", 180.0) or 180.0)
-    item.damping_angular_momentum_factor = float(damping.get("angularMomentumFactor", 0.3) or 0.3)
-    item.damping_max_angular_momentum = float(damping.get("maxAngularMomentumDegrees", 45.0) or 45.0)
+    item.damping_linear_factor = _number(damping.get("linearFactor"), 0.15)
+    item.damping_angular_factor = _number(damping.get("angularFactor"), 0.1)
+    item.damping_max_linear = _number(damping.get("maxLinearDistance"), 3.0)
+    item.damping_max_angular = _number(damping.get("maxAngularDegrees"), 180.0)
+    item.damping_angular_momentum_factor = _number(damping.get("angularMomentumFactor"), 0.3)
+    item.damping_max_angular_momentum = _number(damping.get("maxAngularMomentumDegrees"), 45.0)
     item.animation_json = json.dumps(raw.get("animation", {}), ensure_ascii=False, indent=2)
     item.startup_json = json.dumps(raw.get("startup", {}), ensure_ascii=False, indent=2)
     item.shutdown_json = json.dumps(raw.get("shutdown", {}), ensure_ascii=False, indent=2)
@@ -489,6 +544,7 @@ def import_definition_to_scene(scene, definition: Mapping[str, Any], replace: bo
     root["halo_source_path"] = str(definition.get("source_path", ""))
     root["halo_positioning_offset"] = _vec(raw.get("positioning", {}).get("offset") if isinstance(raw.get("positioning"), Mapping) else None, 3, (0, 0, 0))
     root["halo_positioning_scale"] = float(raw.get("positioning", {}).get("scale", 1.0) if isinstance(raw.get("positioning"), Mapping) else 1.0)
+    _lock_managed_transform(root)
     item.root_uuid = root["halo_uuid"]
     layers = raw.get("layers", [])
     if isinstance(layers, list):
@@ -579,12 +635,24 @@ def _sync_group(obj) -> dict[str, Any]:
     raw.setdefault("position", [0.0, 0.0, 0.0])
     raw.setdefault("rotation", [0.0, 0.0, 0.0])
     raw.setdefault("scale", 1.0)
-    raw["position"] = list(blender_to_mc(obj.location))
-    raw["rotation"] = list(blender_rotation_to_mc_euler(obj.rotation_quaternion if obj.rotation_mode == "QUATERNION" else obj.rotation_euler))
-    scale_value, is_uniform = uniform_scale(obj.scale)
+    if node is not None:
+        raw["position"] = [float(value) for value in node.position]
+        raw["rotation"] = [float(value) for value in node.rotation]
+        scale_value = float(node.scale)
+        _set_group_transform(obj, raw)
+        is_uniform = True
+    else:
+        raw["position"] = list(blender_to_mc(obj.location))
+        raw["rotation"] = list(blender_rotation_to_mc_euler(obj.rotation_quaternion if obj.rotation_mode == "QUATERNION" else obj.rotation_euler))
+        scale_value, is_uniform = uniform_scale(obj.scale)
     raw["scale"] = scale_value
     obj["halo_non_uniform_scale"] = not is_uniform
     if node is not None:
+        node_id = str(node.node_id).strip()
+        if node_id:
+            raw["id"] = node_id
+        else:
+            raw.pop("id", None)
         node.position = raw["position"]
         node.rotation = raw["rotation"]
         node.scale = scale_value
@@ -779,6 +847,20 @@ def _root_positioning(scene, root):
             root.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
     root.scale = (scale, scale, scale)
     root["halo_preview_space"] = project.preview_space
+    # Keep the non-animated anchor transform separate from the definition
+    # root animation.  Minecraft composes these matrices as
+    #
+    #   anchor translation * anchor rotation * positioning scale
+    #       * root animation translation/rotation/scale
+    #
+    # Blender's delta_location is added in parent/world axes, so using delta
+    # transforms on this root makes MC_HEAD animation drift along world axes.
+    # The frame handler uses this stable base pose to reproduce the same local
+    # matrix order explicitly on every frame (and therefore never accumulates
+    # animation into the anchor pose).
+    root["halo_preview_base_location"] = tuple(float(value) for value in root.location)
+    root["halo_preview_base_rotation"] = tuple(float(value) for value in root.rotation_quaternion)
+    root["halo_preview_base_scale"] = tuple(float(value) for value in root.scale)
 
 
 def update_preview_roots(scene):
@@ -958,6 +1040,18 @@ def reparent_object(obj, new_parent, preserve_world: bool = True):
     if preserve_world and world is not None:
         obj.matrix_world = world
     obj["halo_parent_uuid"] = new_parent.get("halo_uuid", "")
+    node = getattr(obj, "halo_node", None)
+    if node is not None:
+        obj["halo_property_update_guard"] = True
+        try:
+            node.position = blender_to_mc(obj.location)
+            rotation = obj.rotation_quaternion if obj.rotation_mode == "QUATERNION" else obj.rotation_euler
+            node.rotation = blender_rotation_to_mc_euler(rotation)
+            node.scale = uniform_scale(obj.scale)[0]
+            node.parent_uuid = obj["halo_parent_uuid"]
+        finally:
+            obj.pop("halo_property_update_guard", None)
+    _lock_managed_transform(obj)
     return obj
 
 
@@ -979,6 +1073,8 @@ __all__ = [
     "import_definition_to_scene",
     "sync_definition_from_scene",
     "sync_all_definitions",
+    "reset_primitive_transform",
+    "enforce_managed_transform_locks",
     "update_preview_roots",
     "export_pack_from_scene",
     "object_by_uuid",

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+from .properties import TRANSITION_DEFAULT_GROUP
+
 try:
     import bpy
     from bpy.types import Panel, UIList
@@ -11,7 +13,79 @@ except ImportError:  # pragma: no cover
     bpy = None
 
 
+def _transition_panel_segments(document, group_id):
+    """Return authored segments and whether this ID has its own override."""
+
+    if not isinstance(document, dict):
+        return [], False
+    if not group_id or group_id == TRANSITION_DEFAULT_GROUP:
+        segments = document.get("segments")
+        return (segments if isinstance(segments, list) else []), True
+    overrides = document.get("id_overrides")
+    if not isinstance(overrides, dict) or group_id not in overrides:
+        return [], False
+    entry = overrides[group_id]
+    if isinstance(entry, list):
+        return entry, True
+    if isinstance(entry, dict) and isinstance(entry.get("segments"), list):
+        return entry["segments"], True
+    return [], True
+
+
+def _transition_endpoint_text(value):
+    if value is None:
+        return "—"
+    if isinstance(value, list):
+        return "[" + ", ".join(f"{float(item):g}" for item in value[:3]) + "]"
+    try:
+        return f"{float(value):g}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _transition_property(segment, channel):
+    if not isinstance(segment, dict):
+        return None
+    value = segment.get(channel)
+    if channel == "alpha" and not isinstance(value, dict):
+        value = segment.get("opacity")
+    return value if isinstance(value, dict) else None
+
+
 if bpy is not None:
+
+    def _nudge_button(row, target, axis, direction, text):
+        operator = row.operator("halo.nudge_transform", text=text)
+        operator.target = target
+        operator.axis = axis
+        operator.direction = direction
+
+
+    def _draw_transform_editor(layout, node, project):
+        row = layout.row(align=True)
+        row.prop_enum(project, "transform_precision", "COARSE", text="粗调")
+        row.prop_enum(project, "transform_precision", "FINE", text="细调")
+        prefix = "coarse" if project.transform_precision == "COARSE" else "fine"
+        steps = layout.column(align=True)
+        steps.prop(project, f"{prefix}_position_step", text="位置步长")
+        steps.prop(project, f"{prefix}_rotation_step", text="旋转步长")
+        steps.prop(project, f"{prefix}_scale_step", text="缩放步长")
+        for target, label, property_name in (
+            ("position", "位置", "position"),
+            ("rotation", "旋转 YXZ", "rotation"),
+        ):
+            layout.label(text=label)
+            for axis, axis_name in enumerate(("X", "Y", "Z")):
+                row = layout.row(align=True)
+                row.label(text=axis_name)
+                _nudge_button(row, target, axis, -1, "−")
+                row.prop(node, property_name, index=axis, text="")
+                _nudge_button(row, target, axis, 1, "+")
+        row = layout.row(align=True)
+        row.label(text="统一缩放")
+        _nudge_button(row, "scale", 0, -1, "−")
+        row.prop(node, "scale", text="")
+        _nudge_button(row, "scale", 0, 1, "+")
 
     class HALO_UL_definitions(UIList):
         bl_idname = "HALO_UL_definitions"
@@ -48,6 +122,7 @@ if bpy is not None:
             row.operator("halo.new_definition", text="新建光环", icon="ADD")
             row.operator("halo.open_raw_json", text="打开 JSON", icon="TEXT")
             row.operator("halo.apply_raw_json", text="应用 JSON", icon="FILE_REFRESH")
+            layout.label(text="组的父子关系：见下方“树形编辑”面板", icon="INFO")
 
 
     class HALO_PT_definition(Panel):
@@ -70,6 +145,9 @@ if bpy is not None:
                 layout.label(text="请选择一个光环定义")
                 return
             layout.prop(item, "definition_id", text="ID")
+            error = context.scene.halo_project.get("halo_definition_id_error", "")
+            if error:
+                layout.label(text=error, icon="ERROR")
             layout.prop(item, "schema_version", text="Schema")
             layout.prop(item, "orientation_mode", text="朝向")
             layout.prop(item, "sync_offset", text="同步偏移")
@@ -78,10 +156,21 @@ if bpy is not None:
             box.prop(item, "positioning_offset", text="头部偏移")
             box.prop(item, "positioning_scale", text="整体缩放")
             box = layout.box()
+            box.label(text="阻尼跟踪（仅编辑，暂不模拟）", icon="TRACKING")
+            box.prop(item, "damping_linear_factor", text="线性阻尼系数")
+            box.prop(item, "damping_angular_factor", text="角度阻尼系数")
+            box.prop(item, "damping_max_linear", text="最大线性偏移（方块）")
+            box.prop(item, "damping_max_angular", text="最大角度偏移（°）")
+            box.separator()
+            box.prop(item, "allow_angular_momentum", text="允许角动量")
+            momentum = box.column(align=True)
+            momentum.enabled = bool(item.allow_angular_momentum)
+            momentum.prop(item, "damping_angular_momentum_factor", text="角动量响应系数")
+            momentum.prop(item, "damping_max_angular_momentum", text="最大角动量偏角（°）")
+            box = layout.box()
             box.label(text="状态")
             box.prop(item, "hide_on_sleep")
             box.prop(item, "display_in_invisible")
-            box.prop(item, "allow_angular_momentum")
             row = layout.row(align=True)
             row.operator("halo.add_group", text="添加部件组", icon="ADD")
             row.operator("halo.sync_scene", text="同步 JSON", icon="FILE_REFRESH")
@@ -111,12 +200,13 @@ if bpy is not None:
             if node is None:
                 layout.label(text="缺少 Halo 节点属性", icon="ERROR")
                 return
-            layout.prop(node, "node_id", text="部件 ID")
-            layout.label(text=f"UUID: {node.uuid}")
-            layout.prop(node, "position", text="位置 (MC)")
-            layout.prop(node, "rotation", text="旋转 YXZ")
-            layout.prop(node, "scale", text="缩放")
             if role == "group":
+                layout.prop(node, "node_id", text="部件 ID")
+                layout.label(text=f"UUID: {node.uuid}")
+                transform = layout.box()
+                transform.label(text="局部变换（Minecraft 坐标）", icon="ORIENTATION_LOCAL")
+                transform.label(text="视图 G/R/S 已锁定，请使用下方控件", icon="LOCKED")
+                _draw_transform_editor(transform, node, context.scene.halo_project)
                 box = layout.box()
                 box.prop(node, "glowing")
                 box.prop(node, "inherit_alpha")
@@ -128,20 +218,45 @@ if bpy is not None:
                 row.operator("halo.add_group", text="添加子组", icon="ADD")
                 row.operator("halo.add_primitive", text="添加图元", icon="MESH_PLANE")
             else:
+                layout.label(text=f"UUID: {node.uuid}")
+                parent = obj.parent if obj.parent is not None and obj.parent.get("halo_role") == "group" else None
+                transform = layout.box()
+                transform.label(text="所属部件组变换", icon="OUTLINER_OB_EMPTY")
+                if parent is not None and getattr(parent, "halo_node", None) is not None:
+                    parent_node = parent.halo_node
+                    transform.label(text=parent_node.node_id or parent.name)
+                    transform.label(text="视图 G/R/S 已锁定，请使用下方控件", icon="LOCKED")
+                    _draw_transform_editor(transform, parent_node, context.scene.halo_project)
+                    transform.operator("halo.select_parent_group", text="在视图中选择此部件组", icon="RESTRICT_SELECT_OFF")
+                    if len([child for child in parent.children if child.get("halo_role") == "primitive"]) > 1:
+                        transform.label(text="同组图元共享此变换", icon="INFO")
+                else:
+                    transform.label(text="图元缺少有效父组", icon="ERROR")
                 box = layout.box()
                 box.prop(node, "primitive_type", text="类型")
-                box.prop(node, "texture", text="纹理")
                 if node.primitive_type == "ring":
+                    box.prop(node, "texture", text="外侧纹理")
+                    outer_row = box.row(align=True)
+                    outer_import = outer_row.operator("halo.import_texture", text="导入外侧 PNG", icon="IMAGE_DATA")
+                    outer_import.target = "OUTER"
                     box.prop(node, "inner_texture", text="内侧纹理")
+                    inner_row = box.row(align=True)
+                    inner_import = inner_row.operator("halo.import_texture", text="导入内侧 PNG", icon="IMAGE_DATA")
+                    inner_import.target = "INNER"
+                    inner_row.operator("halo.clear_inner_texture", text="使用外侧", icon="X")
                     box.prop(node, "segments", text="分段")
+                else:
+                    box.prop(node, "texture", text="纹理")
+                    texture_import = box.operator("halo.import_texture", text="导入 PNG", icon="IMAGE_DATA")
+                    texture_import.target = "OUTER"
                 box.prop(node, "size", text="尺寸")
                 box.prop(node, "face_camera", text="面向相机")
-                row = box.row(align=True)
-                row.operator("halo.import_texture", text="导入 PNG", icon="IMAGE_DATA")
-                row.operator("halo.refresh_geometry", text="更新几何", icon="MESH_DATA")
+                box.operator("halo.refresh_geometry", text="强制刷新", icon="FILE_REFRESH")
             row = layout.row(align=True)
-            row.operator("halo.duplicate_node", text="复制", icon="DUPLICATE")
+            row.operator("halo.duplicate_node", text="在当前父级复制", icon="DUPLICATE")
             row.operator("halo.delete_node", text="删除", icon="TRASH")
+            if role == "primitive":
+                layout.operator("halo.move_primitive", text="迁移到其他父级…", icon="CONSTRAINT_BONE")
 
 
     class HALO_PT_animation(Panel):
@@ -228,21 +343,112 @@ if bpy is not None:
             if item is not None:
                 box = layout.box()
                 box.label(text="过渡动画")
-                for target, label, payload in (
-                    ("startup", "启动 startup", item.startup_json),
-                    ("shutdown", "关闭 shutdown", item.shutdown_json),
-                ):
-                    try:
-                        parsed = json.loads(payload or "{}")
-                        segment_count = len(parsed.get("segments", [])) if isinstance(parsed, dict) else 0
-                        override_count = len(parsed.get("id_overrides", {})) if isinstance(parsed, dict) and isinstance(parsed.get("id_overrides"), dict) else 0
-                        description = f"{label}：{segment_count} 段 / {override_count} 个 ID 覆盖"
-                    except (TypeError, ValueError):
-                        description = f"{label}：JSON 无法解析"
+                row = box.row(align=True)
+                row.prop_enum(project, "transition_target", "startup", text="启动 startup")
+                row.prop_enum(project, "transition_target", "shutdown", text="关闭 shutdown")
+                row = box.row(align=True)
+                row.prop(project, "transition_group_id", text="组 ID")
+                row.operator("halo.transition_use_active_group", text="", icon="EYEDROPPER")
+                payload = item.startup_json if project.transition_target == "startup" else item.shutdown_json
+                try:
+                    transition = json.loads(payload or "{}")
+                    if not isinstance(transition, dict):
+                        raise ValueError("根节点不是对象")
+                    parse_error = ""
+                except (TypeError, ValueError) as exc:
+                    transition = {}
+                    parse_error = str(exc)
+                if parse_error:
+                    box.label(text=f"JSON 无法解析：{parse_error}", icon="ERROR")
+                    open_transition = box.operator("halo.open_animation_json", text="打开多行 JSON 修复", icon="TEXT")
+                    open_transition.target = project.transition_target
+                else:
+                    group_id = project.transition_group_id or TRANSITION_DEFAULT_GROUP
+                    segments, has_override = _transition_panel_segments(transition, group_id)
+                    default_segments = transition.get("segments") if isinstance(transition.get("segments"), list) else []
+                    if group_id != TRANSITION_DEFAULT_GROUP and not has_override:
+                        box.label(text=f"当前组继承默认时间线（{len(default_segments)} 段）", icon="LINKED")
+                        box.label(text="添加过渡段会建立独立 id_overrides", icon="INFO")
+                    elif group_id != TRANSITION_DEFAULT_GROUP:
+                        row = box.row(align=True)
+                        row.label(text=f"独立 ID 覆盖：{len(segments)} 段", icon="ANIM")
+                        row.operator("halo.transition_override_clear", text="删除覆盖", icon="UNLINKED")
+                    else:
+                        box.label(text=f"默认时间线：{len(segments)} 段", icon="ANIM")
+
+                    boundary_indices = {}
+                    for channel in ("offset", "scale", "alpha", "rotation"):
+                        active_indices = [
+                            candidate_index for candidate_index, candidate in enumerate(segments)
+                            if _transition_property(candidate, channel) is not None
+                        ]
+                        if active_indices:
+                            boundary_indices[channel] = (
+                                active_indices[0] if project.transition_target == "startup" else active_indices[-1]
+                            )
+
+                    for index, segment in enumerate(segments):
+                        segment_box = box.box()
+                        if not isinstance(segment, dict):
+                            segment_box.label(text=f"段 {index + 1}：不是 JSON 对象", icon="ERROR")
+                            continue
+                        duration = segment.get("duration", "未填写")
+                        easing = segment.get("easing", "linear")
+                        header = segment_box.row(align=True)
+                        header.label(text=f"段 {index + 1}   时间 {duration}s   {easing}", icon="KEYFRAME")
+                        edit = header.operator("halo.transition_segment_edit", text="", icon="GREASEPENCIL")
+                        edit.index = index
+                        up = header.operator("halo.transition_segment_move", text="", icon="TRIA_UP")
+                        up.index = index
+                        up.direction = -1
+                        down = header.operator("halo.transition_segment_move", text="", icon="TRIA_DOWN")
+                        down.index = index
+                        down.direction = 1
+                        remove = header.operator("halo.transition_segment_remove", text="", icon="TRASH")
+                        remove.index = index
+
+                        for channel, label in (("offset", "Offset"), ("scale", "Scale"), ("alpha", "Alpha"), ("rotation", "Rotation YXZ")):
+                            prop = _transition_property(segment, channel)
+                            if prop is None:
+                                continue
+                            details = f"from {_transition_endpoint_text(prop.get('from'))}  →  to {_transition_endpoint_text(prop.get('to'))}"
+                            overrides = []
+                            if prop.get("duration") is not None:
+                                overrides.append(f"{prop.get('duration')}s")
+                            if prop.get("easing") is not None:
+                                overrides.append(str(prop.get("easing")))
+                            if channel == "rotation" and prop.get("degrees") is not None:
+                                overrides.append(f"degrees {_transition_endpoint_text(prop.get('degrees'))}")
+                            if overrides:
+                                details += "  ·  " + " / ".join(overrides)
+                            required_endpoint = "from" if project.transition_target == "startup" else "to"
+                            boundary_missing = (
+                                boundary_indices.get(channel) == index and prop.get(required_endpoint) is None
+                            )
+                            if boundary_missing:
+                                details += f"  ·  缺少必填 {required_endpoint}"
+                            channel_row = segment_box.row(align=True)
+                            channel_row.alert = boundary_missing
+                            channel_row.label(text=f"{label}: {details}")
+                            edit_channel = channel_row.operator("halo.transition_channel_edit", text="", icon="GREASEPENCIL")
+                            edit_channel.index = index
+                            edit_channel.channel = channel
+                            remove_channel = channel_row.operator("halo.transition_channel_remove", text="", icon="X")
+                            remove_channel.index = index
+                            remove_channel.channel = channel
+
+                        add_row = segment_box.row(align=True)
+                        for channel, label in (("offset", "+Offset"), ("scale", "+Scale"), ("alpha", "+Alpha"), ("rotation", "+Rotation")):
+                            if _transition_property(segment, channel) is not None:
+                                continue
+                            add_channel = add_row.operator("halo.transition_channel_edit", text=label)
+                            add_channel.index = index
+                            add_channel.channel = channel
+
                     row = box.row(align=True)
-                    row.label(text=description, icon="ANIM")
-                    open_transition = row.operator("halo.open_animation_json", text="多行编辑", icon="TEXT")
-                    open_transition.target = target
+                    row.operator("halo.transition_segment_add", text="添加过渡段", icon="ADD")
+                    open_transition = row.operator("halo.open_animation_json", text="完整 JSON", icon="TEXT")
+                    open_transition.target = project.transition_target
 
 
     class HALO_PT_text_animation(Panel):
@@ -276,22 +482,50 @@ if bpy is not None:
         bl_space_type = "VIEW_3D"
         bl_region_type = "UI"
 
-        @classmethod
-        def poll(cls, context):
-            obj = context.active_object
-            return obj is not None and obj.get("halo_role") == "group"
-
         def draw(self, context):
             layout = self.layout
             project = context.scene.halo_project
             obj = context.active_object
-            layout.label(text="当前父级 UUID")
-            layout.label(text=obj.parent.get("halo_uuid", "无") if obj.parent else "无")
+            role = obj.get("halo_role") if obj is not None else ""
+
+            if role not in {"definition_root", "group", "primitive"}:
+                layout.label(text="请先选择一个 Halo 部件组", icon="INFO")
+                layout.label(text="可在“大纲视图”或 3D 视图中选择")
+                return
+
+            if role == "definition_root":
+                layout.label(text="当前选择：光环根（不能移动）", icon="EMPTY_AXIS")
+                layout.label(text="请选择它下面需要移动的部件组")
+                return
+
+            if role == "primitive":
+                parent = obj.parent if obj.parent is not None and obj.parent.get("halo_role") == "group" else None
+                layout.label(text="当前选择：图元", icon="MESH_PLANE")
+                if parent is None:
+                    layout.label(text="此图元没有有效的所属组", icon="ERROR")
+                else:
+                    parent_node = getattr(parent, "halo_node", None)
+                    parent_label = str(getattr(parent_node, "node_id", "") or parent.name)
+                    layout.label(text=f"所属部件组：{parent_label}")
+                    layout.operator("halo.select_parent_group", text="选择所属部件组", icon="RESTRICT_SELECT_OFF")
+                    layout.operator("halo.move_primitive", text="迁移到其他父级…", icon="CONSTRAINT_BONE")
+                layout.label(text="Halo JSON 中只有组可以改变父级", icon="INFO")
+                return
+
+            parent = obj.parent
+            if parent is None:
+                parent_label = "无（非法层级）"
+            elif parent.get("halo_role") == "definition_root":
+                parent_label = "光环根（顶层）"
+            else:
+                parent_node = getattr(parent, "halo_node", None)
+                parent_label = str(getattr(parent_node, "node_id", "") or parent.name)
+            layout.label(text=f"当前父级：{parent_label}")
             row = layout.row(align=True)
-            op = row.operator("halo.reparent", text="移动到父级", icon="CONSTRAINT_BONE")
+            op = row.operator("halo.reparent", text="选择新父级…", icon="CONSTRAINT_BONE")
             op.preserve_world = project.preserve_world_on_reparent
             row.prop(project, "preserve_world_on_reparent", text="保持世界位置")
-            layout.label(text="在目标操作器中填写目标父级 UUID")
+            layout.label(text="列表会自动排除自身及其子组", icon="INFO")
 
 
     class HALO_PT_validate_export(Panel):
@@ -327,9 +561,9 @@ if bpy is not None:
         HALO_PT_project,
         HALO_PT_definition,
         HALO_PT_node,
+        HALO_PT_tree,
         HALO_PT_animation,
         HALO_PT_text_animation,
-        HALO_PT_tree,
         HALO_PT_validate_export,
     )
 

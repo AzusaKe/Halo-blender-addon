@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 try:
     import bpy
-    from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty, StringProperty
+    from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty, StringProperty
     from bpy_extras.io_utils import ExportHelper, ImportHelper
 except ImportError:  # pragma: no cover - Blender-only module
     bpy = None
@@ -40,6 +40,7 @@ from .materials import (
     copy_texture_with_sidecars,
     split_resource_id,
 )
+from .properties import EASING_ITEMS, TRANSITION_DEFAULT_GROUP
 
 
 def _active_object(context):
@@ -69,6 +70,186 @@ def _select_object(context, obj):
     context.scene.halo_project.active_uuid = obj.get("halo_uuid", "")
 
 
+_REPARENT_TARGET_ITEMS: list[tuple[str, str, str]] = []
+_PRIMITIVE_MOVE_TARGET_ITEMS: list[tuple[str, str, str]] = []
+
+
+def _group_display_name(obj) -> str:
+    """Return a readable, stable label for a managed group or definition root."""
+
+    if obj is None:
+        return "无"
+    if obj.get("halo_role") == ROOT_ROLE:
+        definition_id = obj.get("halo_definition_id", "")
+        return f"光环根（顶层） · {definition_id}" if definition_id else "光环根（顶层）"
+    node = getattr(obj, "halo_node", None)
+    node_id = str(getattr(node, "node_id", "") or "").strip()
+    return node_id or obj.name
+
+
+def _reparent_target_items(_self, context):
+    """List legal parents in the active definition without exposing UUID entry."""
+
+    _REPARENT_TARGET_ITEMS.clear()
+    obj = _active_object(context)
+    if obj is None or obj.get("halo_role") != GROUP_ROLE or bpy is None:
+        return _REPARENT_TARGET_ITEMS
+
+    definition_id = obj.get("halo_definition_id", "")
+    candidates = [
+        candidate for candidate in bpy.data.objects
+        if candidate.get("halo_definition_id") == definition_id
+        and candidate.get("halo_role") in {ROOT_ROLE, GROUP_ROLE}
+    ]
+
+    def is_in_active_subtree(candidate):
+        current = candidate
+        while current is not None:
+            if current == obj:
+                return True
+            current = current.parent
+        return False
+
+    roots = [candidate for candidate in candidates if candidate.get("halo_role") == ROOT_ROLE]
+    groups = [candidate for candidate in candidates if candidate.get("halo_role") == GROUP_ROLE and not is_in_active_subtree(candidate)]
+
+    def group_sort_key(candidate):
+        path = []
+        current = candidate
+        while current is not None and current.get("halo_role") == GROUP_ROLE:
+            path.append(_group_display_name(current).casefold())
+            current = current.parent
+        return tuple(reversed(path))
+
+    for candidate in roots + sorted(groups, key=group_sort_key):
+        depth = 0
+        current = candidate.parent
+        while current is not None and current.get("halo_role") == GROUP_ROLE:
+            depth += 1
+            current = current.parent
+        prefix = "    " * depth + ("↳ " if depth else "")
+        label = _group_display_name(candidate) if candidate.get("halo_role") == ROOT_ROLE else prefix + _group_display_name(candidate)
+        uuid_value = str(candidate.get("halo_uuid", ""))
+        if uuid_value:
+            _REPARENT_TARGET_ITEMS.append((uuid_value, label, f"移动到 {label.strip()} 下"))
+    return _REPARENT_TARGET_ITEMS
+
+
+def _primitive_move_target_items(_self, context):
+    """List legal containers for a new wrapper group around a primitive."""
+
+    _PRIMITIVE_MOVE_TARGET_ITEMS.clear()
+    obj = _active_object(context)
+    if obj is None or obj.get("halo_role") != PRIMITIVE_ROLE or bpy is None:
+        return _PRIMITIVE_MOVE_TARGET_ITEMS
+    source_group = obj.parent
+    definition_id = obj.get("halo_definition_id", "")
+    candidates = [
+        candidate for candidate in bpy.data.objects
+        if candidate.get("halo_definition_id") == definition_id
+        and candidate.get("halo_role") in {ROOT_ROLE, GROUP_ROLE}
+        and candidate != source_group
+    ]
+
+    def sort_key(candidate):
+        if candidate.get("halo_role") == ROOT_ROLE:
+            return ("",)
+        path = []
+        current = candidate
+        while current is not None and current.get("halo_role") == GROUP_ROLE:
+            path.append(_group_display_name(current).casefold())
+            current = current.parent
+        return tuple(reversed(path))
+
+    for candidate in sorted(candidates, key=sort_key):
+        depth = 0
+        current = candidate.parent
+        while current is not None and current.get("halo_role") == GROUP_ROLE:
+            depth += 1
+            current = current.parent
+        prefix = "    " * depth + ("↳ " if depth else "")
+        label = _group_display_name(candidate) if candidate.get("halo_role") == ROOT_ROLE else prefix + _group_display_name(candidate)
+        uuid_value = str(candidate.get("halo_uuid", ""))
+        if uuid_value:
+            _PRIMITIVE_MOVE_TARGET_ITEMS.append((uuid_value, label, f"在 {label.strip()} 下创建属性副本组"))
+    return _PRIMITIVE_MOVE_TARGET_ITEMS
+
+
+def _unique_group_id(definition_id: str, base: str) -> str:
+    base = str(base or "group").strip() or "group"
+    used = {
+        str(getattr(getattr(obj, "halo_node", None), "node_id", "") or "")
+        for obj in bpy.data.objects
+        if obj.get("halo_role") == GROUP_ROLE and obj.get("halo_definition_id") == definition_id
+    }
+    if base not in used:
+        return base
+    index = 2
+    while f"{base}_{index}" in used:
+        index += 1
+    return f"{base}_{index}"
+
+
+def _remap_copied_group_ids(raw: dict[str, Any], definition_id: str) -> list[tuple[str, str]]:
+    """Give every authored group in a copied subtree an independent ID."""
+
+    used = {
+        str(getattr(getattr(obj, "halo_node", None), "node_id", "") or "")
+        for obj in bpy.data.objects
+        if obj.get("halo_role") == GROUP_ROLE and obj.get("halo_definition_id") == definition_id
+    }
+    remapped: list[tuple[str, str]] = []
+
+    def unique(base: str) -> str:
+        candidate = base
+        index = 2
+        while candidate in used:
+            candidate = f"{base}_{index}"
+            index += 1
+        used.add(candidate)
+        return candidate
+
+    def visit(group: dict[str, Any], fallback: str):
+        old_id = str(group.get("id", "") or "").strip()
+        if old_id:
+            new_id = unique(old_id + "_copy")
+            group["id"] = new_id
+            remapped.append((old_id, new_id))
+        elif fallback:
+            group["id"] = unique(fallback)
+        children = group.get("children")
+        if isinstance(children, list):
+            for index, child in enumerate(children):
+                if isinstance(child, dict):
+                    visit(child, f"group_copy_{index + 1}")
+
+    visit(raw, "group_copy")
+    return remapped
+
+
+def _copy_transition_overrides(scene, definition_id: str, id_pairs: list[tuple[str, str]]):
+    """Copy startup/shutdown id_overrides when copied groups receive new IDs."""
+
+    item = next((entry for entry in scene.halo_project.definitions if entry.definition_id == definition_id), None)
+    if item is None:
+        return
+    for property_name in ("startup_json", "shutdown_json"):
+        try:
+            document = json.loads(getattr(item, property_name) or "{}")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(document, dict) or not isinstance(document.get("id_overrides"), dict):
+            continue
+        overrides = document["id_overrides"]
+        changed = False
+        for old_id, new_id in id_pairs:
+            if old_id in overrides and new_id not in overrides:
+                overrides[new_id] = copy.deepcopy(overrides[old_id])
+                changed = True
+        if changed:
+            setattr(item, property_name, json.dumps(document, ensure_ascii=False, indent=2))
+
+
 def _animation_owner(context):
     obj = _active_object(context)
     if obj is not None and obj.get("halo_role") == PRIMITIVE_ROLE and obj.parent is not None:
@@ -96,6 +277,132 @@ def _animation_terms(animation, channel, create=False):
     return parent.get(axis) if isinstance(parent.get(axis), list) else None
 
 
+def _transition_definition(context):
+    project = context.scene.halo_project
+    return next((item for item in project.definitions if item.definition_id == project.active_definition), None)
+
+
+def _transition_document(context):
+    """Load the selected startup/shutdown document without hiding JSON errors."""
+
+    item = _transition_definition(context)
+    if item is None:
+        raise ValueError("请先选择光环定义")
+    target = context.scene.halo_project.transition_target
+    payload = item.startup_json if target == "startup" else item.shutdown_json
+    try:
+        document = json.loads(payload or "{}")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{target} JSON 无法解析：{exc}") from exc
+    if not isinstance(document, dict):
+        raise ValueError(f"{target} JSON 根节点必须是对象")
+    return item, target, document
+
+
+def _transition_segments(context, *, create=False):
+    """Return the authored segment list for the selected default/group track."""
+
+    item, target, document = _transition_document(context)
+    group_id = str(context.scene.halo_project.transition_group_id or TRANSITION_DEFAULT_GROUP)
+    if group_id == TRANSITION_DEFAULT_GROUP:
+        segments = document.get("segments")
+        if not isinstance(segments, list):
+            if not create:
+                segments = []
+            else:
+                segments = []
+                document["segments"] = segments
+        return item, target, document, segments, True
+
+    overrides = document.get("id_overrides")
+    if not isinstance(overrides, dict):
+        if not create:
+            return item, target, document, [], False
+        overrides = {}
+        document["id_overrides"] = overrides
+    entry = overrides.get(group_id)
+    exists = entry is not None
+    if isinstance(entry, list):
+        segments = entry
+    elif isinstance(entry, dict) and isinstance(entry.get("segments"), list):
+        segments = entry["segments"]
+    elif create:
+        entry = dict(entry) if isinstance(entry, dict) else {}
+        segments = []
+        entry["segments"] = segments
+        overrides[group_id] = entry
+        exists = True
+    else:
+        segments = []
+    return item, target, document, segments, exists
+
+
+def _store_transition_document(item, target: str, document: Mapping[str, Any]):
+    payload = json.dumps(dict(document), ensure_ascii=False, indent=2)
+    if target == "startup":
+        item.startup_json = payload
+    else:
+        item.shutdown_json = payload
+
+
+def _transition_channel_entry(segment: Mapping[str, Any], channel: str):
+    key = channel
+    if channel == "alpha" and not isinstance(segment.get("alpha"), Mapping) and isinstance(segment.get("opacity"), Mapping):
+        key = "opacity"
+    value = segment.get(key)
+    return key, value if isinstance(value, Mapping) else None
+
+
+def _transition_identity(channel: str):
+    if channel == "scale":
+        return (1.0, 1.0, 1.0)
+    if channel == "alpha":
+        return (1.0,)
+    return (0.0, 0.0, 0.0)
+
+
+def _transition_boundary_errors(segments, target: str):
+    """Return authored-boundary violations using the Java parser's rule."""
+
+    errors = set()
+    endpoint = "from" if target == "startup" else "to"
+    for channel in ("offset", "scale", "alpha", "rotation"):
+        active = []
+        for index, segment in enumerate(segments):
+            if isinstance(segment, Mapping):
+                _key, prop = _transition_channel_entry(segment, channel)
+                if prop is not None:
+                    active.append((index, prop))
+        if not active:
+            continue
+        index, prop = active[0 if target == "startup" else -1]
+        if prop.get(endpoint) is None:
+            errors.add((channel, index, endpoint))
+    return errors
+
+
+def _transition_vector3(value, default=(0.0, 0.0, 0.0)):
+    if isinstance(value, (list, tuple)):
+        values = [float(item) for item in value[:3]]
+    elif value is None:
+        values = []
+    else:
+        values = [float(value)]
+    while len(values) < 3:
+        values.append(float(default[len(values)]))
+    return tuple(values)
+
+
+def _refresh_transition_preview(context):
+    try:
+        from .handlers import update_animation
+        update_animation(context.scene)
+    except Exception:
+        # Editing remains authoritative even when a malformed unrelated node
+        # prevents a particular preview frame from evaluating.
+        pass
+
+
 def _set_node_mesh(obj):
     node = getattr(obj, "halo_node", None)
     if node is None or obj.get("halo_role") != PRIMITIVE_ROLE:
@@ -107,42 +414,43 @@ def _set_node_mesh(obj):
         obj.data = billboard_mesh(obj.name, node.size)
     if old_mesh and old_mesh.users == 0:
         bpy.data.meshes.remove(old_mesh)
+    blender_scene.reset_primitive_transform(obj)
     pack_root = getattr(bpy.context.scene.halo_project, "pack_root", "")
-    assign_primitive_materials(obj, node.texture, node.inner_texture or None, pack_root, glowing=node.glowing)
+    group_node = getattr(obj.parent, "halo_node", None) if obj.parent is not None else None
+    glowing = bool(group_node.glowing) if group_node is not None else True
+    assign_primitive_materials(obj, node.texture, node.inner_texture or None, pack_root, glowing=glowing)
+    obj["halo_face_camera"] = bool(node.face_camera)
     obj["halo_raw_json"] = obj.get("halo_primitive_raw_json", obj.get("halo_raw_json", "{}"))
     return True
 
 
-def _clone_tree(obj, parent, collection):
-    clone = obj.copy()
-    if obj.data is not None:
-        clone.data = obj.data.copy()
-    clone.name = obj.name + " Copy"
-    collection.objects.link(clone)
-    clone.parent = parent
-    clone["halo_uuid"] = uuid.uuid4().hex
-    clone["halo_parent_uuid"] = parent.get("halo_uuid", "") if parent else ""
-    if clone.get("halo_role") == GROUP_ROLE:
-        node = getattr(clone, "halo_node", None)
-        if node is not None:
-            base = node.node_id or "group"
-            node.node_id = base + "_copy"
-        try:
-            raw = json.loads(clone.get("halo_raw_json", "{}"))
-            if isinstance(raw, dict) and "id" in raw:
-                raw["id"] = str(raw["id"]) + "_copy"
-                clone["halo_raw_json"] = json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
-        except (TypeError, ValueError):
-            pass
-    if clone.get("halo_role") == PRIMITIVE_ROLE:
-        try:
-            raw = json.loads(clone.get("halo_primitive_raw_json", "{}"))
-            clone["halo_primitive_raw_json"] = json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
-        except (TypeError, ValueError):
-            pass
-    for child in obj.children:
-        if child.get("halo_role") in {GROUP_ROLE, PRIMITIVE_ROLE}:
-            _clone_tree(child, clone, collection)
+def _duplicate_node_from_json(context, obj):
+    """Create a schema-correct sibling copy with fresh UUIDs throughout."""
+
+    parent = obj.parent
+    if parent is None or parent.get("halo_role") not in {ROOT_ROLE, GROUP_ROLE}:
+        raise ValueError("所选部件没有有效的当前父级")
+    collection = obj.users_collection[0] if obj.users_collection else blender_scene._ensure_collection(context.scene)
+    definition_id = obj.get("halo_definition_id", "")
+    path_token = uuid.uuid4().hex[:12]
+    if obj.get("halo_role") == GROUP_ROLE:
+        raw = copy.deepcopy(blender_scene._sync_group(obj))
+        id_pairs = _remap_copied_group_ids(raw, definition_id)
+        clone = blender_scene._make_group(collection, parent, raw, definition_id, f"manual/copy/{path_token}")
+        _copy_transition_overrides(context.scene, definition_id, id_pairs)
+    elif obj.get("halo_role") == PRIMITIVE_ROLE:
+        raw = copy.deepcopy(blender_scene._sync_primitive(obj))
+        parent_node = getattr(parent, "halo_node", None)
+        glowing = bool(parent_node.glowing) if parent_node is not None else True
+        clone = blender_scene._make_primitive(collection, parent, raw, definition_id, f"manual/primitive/{path_token}", glowing)
+        sibling_indices = [
+            int(child.get("halo_primitive_index", 0))
+            for child in parent.children if child != clone and child.get("halo_role") == PRIMITIVE_ROLE
+        ]
+        clone["halo_primitive_index"] = max(sibling_indices, default=-1) + 1
+    else:
+        raise ValueError("只能复制部件组或图元")
+    sync_definition_from_scene(context.scene, definition_id)
     return clone
 
 
@@ -405,25 +713,97 @@ if bpy is not None:
             primitive = {"type": self.primitive_type, "texture": self.texture, "size": [1.0, 1.0]}
             if self.primitive_type == "ring":
                 primitive = {"type": "ring", "texture": self.texture, "size": [0.5, 0.05], "segments": 64}
-            obj = blender_scene._make_primitive(collection, parent, primitive, parent.get("halo_definition_id", ""), f"manual/primitive/{uuid.uuid4().hex[:8]}", bool(parent.get("halo_raw_json", "{}")))
+            parent_node = getattr(parent, "halo_node", None)
+            glowing = bool(parent_node.glowing) if parent_node is not None else True
+            obj = blender_scene._make_primitive(collection, parent, primitive, parent.get("halo_definition_id", ""), f"manual/primitive/{uuid.uuid4().hex[:8]}", glowing)
             _select_object(context, obj)
+            return {"FINISHED"}
+
+
+    class HALO_OT_select_parent_group(bpy.types.Operator):
+        bl_idname = "halo.select_parent_group"
+        bl_label = "选择所属部件组"
+        bl_options = {"REGISTER"}
+
+        @classmethod
+        def poll(cls, context):
+            obj = _active_object(context)
+            return obj is not None and obj.get("halo_role") == PRIMITIVE_ROLE and obj.parent is not None and obj.parent.get("halo_role") == GROUP_ROLE
+
+        def execute(self, context):
+            obj = _active_object(context)
+            parent = obj.parent if obj is not None else None
+            if parent is None or parent.get("halo_role") != GROUP_ROLE:
+                self.report({"ERROR"}, "当前图元没有有效的所属部件组")
+                return {"CANCELLED"}
+            _select_object(context, parent)
+            return {"FINISHED"}
+
+
+    class HALO_OT_nudge_transform(bpy.types.Operator):
+        bl_idname = "halo.nudge_transform"
+        bl_label = "步进调整部件变换"
+        bl_options = {"REGISTER", "UNDO"}
+
+        target: EnumProperty(
+            name="属性",
+            items=(("position", "位置", ""), ("rotation", "旋转", ""), ("scale", "缩放", "")),
+            default="position",
+            options={"HIDDEN"},
+        )
+        axis: IntProperty(name="轴", default=0, min=0, max=2, options={"HIDDEN"})
+        direction: IntProperty(name="方向", default=1, min=-1, max=1, options={"HIDDEN"})
+
+        @classmethod
+        def poll(cls, context):
+            obj = _active_object(context)
+            return obj is not None and obj.get("halo_role") in {GROUP_ROLE, PRIMITIVE_ROLE}
+
+        def execute(self, context):
+            obj = _active_object(context)
+            if obj is not None and obj.get("halo_role") == PRIMITIVE_ROLE:
+                obj = obj.parent
+            if obj is None or obj.get("halo_role") != GROUP_ROLE or getattr(obj, "halo_node", None) is None:
+                self.report({"ERROR"}, "请选择部件组或其图元")
+                return {"CANCELLED"}
+            project = context.scene.halo_project
+            prefix = "coarse" if project.transform_precision == "COARSE" else "fine"
+            step_name = f"{prefix}_{self.target}_step"
+            step = float(getattr(project, step_name)) * (-1.0 if self.direction < 0 else 1.0)
+            node = obj.halo_node
+            if self.target == "scale":
+                node.scale = float(node.scale) + step
+            else:
+                values = list(getattr(node, self.target))
+                values[int(self.axis)] += step
+                setattr(node, self.target, values)
             return {"FINISHED"}
 
 
     class HALO_OT_duplicate_node(bpy.types.Operator):
         bl_idname = "halo.duplicate_node"
-        bl_label = "复制部件"
+        bl_label = "在当前父级复制"
+        bl_description = "在当前父级下创建所选组或图元的独立副本"
         bl_options = {"REGISTER", "UNDO"}
+
+        @classmethod
+        def poll(cls, context):
+            obj = _active_object(context)
+            return obj is not None and obj.get("halo_role") in {GROUP_ROLE, PRIMITIVE_ROLE}
 
         def execute(self, context):
             obj = _active_object(context)
             if obj is None or obj.get("halo_role") not in {GROUP_ROLE, PRIMITIVE_ROLE}:
                 self.report({"ERROR"}, "请选择要复制的部件组或图元")
                 return {"CANCELLED"}
-            parent = obj.parent
-            collection = obj.users_collection[0] if obj.users_collection else blender_scene._ensure_collection(context.scene)
-            clone = _clone_tree(obj, parent, collection)
+            try:
+                clone = _duplicate_node_from_json(context, obj)
+            except Exception as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
             _select_object(context, clone)
+            role_name = "部件组" if clone.get("halo_role") == GROUP_ROLE else "图元"
+            self.report({"INFO"}, f"已在当前父级下复制{role_name}")
             return {"FINISHED"}
 
 
@@ -446,23 +826,165 @@ if bpy is not None:
 
     class HALO_OT_reparent(bpy.types.Operator):
         bl_idname = "halo.reparent"
-        bl_label = "移动到父级"
+        bl_label = "选择新父级"
+        bl_description = "把当前组移动到光环根或另一个组下"
         bl_options = {"REGISTER", "UNDO"}
 
-        target_uuid: StringProperty(name="目标父级 UUID", default="")
-        preserve_world: BoolProperty(name="保持世界位置", default=True)
+        target_uuid: EnumProperty(name="新父级", description="选择光环根或同一光环定义中的另一个组", items=_reparent_target_items)
+        preserve_world: BoolProperty(
+            name="保持世界外观",
+            description="重新计算局部 JSON 变换，使移动父级前后的世界位置和朝向不变；关闭后保留原局部 JSON 值",
+            default=True,
+        )
+
+        @classmethod
+        def poll(cls, context):
+            obj = _active_object(context)
+            return obj is not None and obj.get("halo_role") == GROUP_ROLE
+
+        def invoke(self, context, _event):
+            items = _reparent_target_items(self, context)
+            valid_ids = {item[0] for item in items}
+            obj = _active_object(context)
+            current_parent_uuid = str(obj.parent.get("halo_uuid", "")) if obj is not None and obj.parent is not None else ""
+            if current_parent_uuid in valid_ids:
+                self.target_uuid = current_parent_uuid
+            elif items:
+                self.target_uuid = items[0][0]
+            return context.window_manager.invoke_props_dialog(self, width=460)
+
+        def draw(self, context):
+            layout = self.layout
+            obj = _active_object(context)
+            layout.label(text=f"移动组：{_group_display_name(obj)}", icon="CONSTRAINT_BONE")
+            layout.prop(self, "target_uuid")
+            layout.prop(self, "preserve_world")
 
         def execute(self, context):
             obj = _active_object(context)
-            target = object_by_uuid(self.target_uuid.strip())
+            target = object_by_uuid(self.target_uuid)
             if obj is None or target is None:
-                self.report({"ERROR"}, "请选择组，并填写有效的目标父级 UUID")
+                self.report({"ERROR"}, "请选择组和有效的新父级")
                 return {"CANCELLED"}
             try:
                 reparent_object(obj, target, self.preserve_world)
             except Exception as exc:
                 self.report({"ERROR"}, str(exc))
                 return {"CANCELLED"}
+            context.scene.halo_project.preserve_world_on_reparent = self.preserve_world
+            self.report({"INFO"}, f"已将 {_group_display_name(obj)} 移动到 {_group_display_name(target)}")
+            return {"FINISHED"}
+
+
+    class HALO_OT_move_primitive(bpy.types.Operator):
+        bl_idname = "halo.move_primitive"
+        bl_label = "迁移图元到其他父级"
+        bl_description = "复制所属组的属性生成新组，并把当前图元移动到该新组中"
+        bl_options = {"REGISTER", "UNDO"}
+
+        target_uuid: EnumProperty(
+            name="目标父级",
+            description="新属性副本组将成为这个光环根或部件组的子组",
+            items=_primitive_move_target_items,
+        )
+        new_group_id: StringProperty(
+            name="新部件组 ID",
+            description="用于承载被迁移图元的新组 ID；必须在当前光环定义中唯一",
+            default="",
+        )
+
+        @classmethod
+        def poll(cls, context):
+            obj = _active_object(context)
+            return obj is not None and obj.get("halo_role") == PRIMITIVE_ROLE and obj.parent is not None and obj.parent.get("halo_role") == GROUP_ROLE
+
+        def invoke(self, context, _event):
+            obj = _active_object(context)
+            source_group = obj.parent if obj is not None else None
+            source_node = getattr(source_group, "halo_node", None)
+            source_id = str(getattr(source_node, "node_id", "") or "group")
+            definition_id = obj.get("halo_definition_id", "") if obj is not None else ""
+            self.new_group_id = _unique_group_id(definition_id, source_id + "_moved")
+            items = _primitive_move_target_items(self, context)
+            valid_ids = {item[0] for item in items}
+            current_container_uuid = str(source_group.parent.get("halo_uuid", "")) if source_group is not None and source_group.parent is not None else ""
+            if current_container_uuid in valid_ids:
+                self.target_uuid = current_container_uuid
+            elif items:
+                self.target_uuid = items[0][0]
+            return context.window_manager.invoke_props_dialog(self, width=480)
+
+        def draw(self, context):
+            layout = self.layout
+            obj = _active_object(context)
+            source_group = obj.parent if obj is not None else None
+            layout.label(text=f"原所属组：{_group_display_name(source_group)}", icon="OUTLINER_OB_EMPTY")
+            layout.prop(self, "target_uuid")
+            layout.prop(self, "new_group_id")
+            box = layout.box()
+            box.label(text="将复制原组的变换、动画和继承属性", icon="INFO")
+            box.label(text="不会复制原组中的其他图元或子组")
+
+        def execute(self, context):
+            primitive = _active_object(context)
+            source_group = primitive.parent if primitive is not None else None
+            target = object_by_uuid(self.target_uuid)
+            if primitive is None or primitive.get("halo_role") != PRIMITIVE_ROLE or source_group is None or source_group.get("halo_role") != GROUP_ROLE:
+                self.report({"ERROR"}, "请选择具有有效所属组的图元")
+                return {"CANCELLED"}
+            if target is None or target.get("halo_role") not in {ROOT_ROLE, GROUP_ROLE}:
+                self.report({"ERROR"}, "请选择有效的目标父级")
+                return {"CANCELLED"}
+            definition_id = primitive.get("halo_definition_id", "")
+            if target.get("halo_definition_id") != definition_id:
+                self.report({"ERROR"}, "不能把图元迁移到另一个光环定义")
+                return {"CANCELLED"}
+            if target == source_group:
+                self.report({"ERROR"}, "目标父级不能是图元当前所属组")
+                return {"CANCELLED"}
+            new_group_id = self.new_group_id.strip()
+            if not new_group_id:
+                self.report({"ERROR"}, "新部件组 ID 不能为空")
+                return {"CANCELLED"}
+            used_ids = {
+                str(getattr(getattr(obj, "halo_node", None), "node_id", "") or "")
+                for obj in bpy.data.objects
+                if obj.get("halo_role") == GROUP_ROLE and obj.get("halo_definition_id") == definition_id
+            }
+            if new_group_id in used_ids:
+                self.report({"ERROR"}, f"部件组 ID 已存在：{new_group_id}")
+                return {"CANCELLED"}
+
+            try:
+                raw = copy.deepcopy(blender_scene._sync_group(source_group))
+                for key in ("children", "primitives", "primitive"):
+                    raw.pop(key, None)
+                raw["id"] = new_group_id
+                collection = target.users_collection[0] if target.users_collection else blender_scene._ensure_collection(context.scene)
+                new_group = blender_scene._make_group(
+                    collection,
+                    target,
+                    raw,
+                    definition_id,
+                    f"manual/moved/{uuid.uuid4().hex[:12]}",
+                )
+                source_group_id = str(getattr(getattr(source_group, "halo_node", None), "node_id", "") or "").strip()
+                if source_group_id:
+                    _copy_transition_overrides(context.scene, definition_id, [(source_group_id, new_group_id)])
+                primitive.parent = new_group
+                blender_scene.reset_primitive_transform(primitive)
+                primitive["halo_parent_uuid"] = new_group.get("halo_uuid", "")
+                primitive["halo_primitive_index"] = 0
+                if getattr(primitive, "halo_node", None) is not None:
+                    primitive.halo_node.parent_uuid = primitive["halo_parent_uuid"]
+                blender_scene._sync_group(source_group)
+                blender_scene._sync_group(new_group)
+                sync_definition_from_scene(context.scene, definition_id)
+            except Exception as exc:
+                self.report({"ERROR"}, f"迁移失败：{exc}")
+                return {"CANCELLED"}
+            _select_object(context, primitive)
+            self.report({"INFO"}, f"已将图元迁移到新组 {new_group_id}")
             return {"FINISHED"}
 
 
@@ -486,6 +1008,12 @@ if bpy is not None:
         bl_options = {"REGISTER", "UNDO"}
         filename_ext = ".png"
         filter_glob: StringProperty(default="*.png", options={"HIDDEN"})
+        target: EnumProperty(
+            name="材质面",
+            items=(("OUTER", "外侧", "Billboard 或 Ring 外侧纹理"), ("INNER", "内侧", "Ring 内侧纹理")),
+            default="OUTER",
+            options={"HIDDEN"},
+        )
 
         def execute(self, context):
             if Path(self.filepath).suffix.lower() != ".png":
@@ -495,13 +1023,16 @@ if bpy is not None:
             if obj is None or obj.get("halo_role") != PRIMITIVE_ROLE:
                 self.report({"ERROR"}, "请先选择一个图元")
                 return {"CANCELLED"}
+            node = obj.halo_node
+            if self.target == "INNER" and node.primitive_type != "ring":
+                self.report({"ERROR"}, "只有 Ring 图元支持独立内侧纹理")
+                return {"CANCELLED"}
             project = context.scene.halo_project
             pack_root = project.pack_root
             if not pack_root or not os.path.isdir(pack_root):
                 pack_root = tempfile.mkdtemp(prefix="halo_pack_edit_")
                 project.pack_root = pack_root
-            node = obj.halo_node
-            old_id = node.texture or "minecraft:textures/halo/imported.png"
+            old_id = (node.inner_texture if self.target == "INNER" else node.texture) or node.texture or "minecraft:textures/halo/imported.png"
             namespace, relative = split_resource_id(old_id)
             filename = Path(self.filepath).name
             if not relative or relative.endswith("/"):
@@ -517,10 +1048,36 @@ if bpy is not None:
             assets_root = Path(pack_root).resolve() / "assets" / namespace
             actual_relative = actual.relative_to(assets_root).as_posix()
             texture_id = f"{namespace}:{actual_relative}"
-            node.texture = texture_id
-            obj["halo_texture_id"] = texture_id
+            if self.target == "INNER":
+                node.inner_texture = texture_id
+                obj["halo_inner_texture_id"] = texture_id
+            else:
+                node.texture = texture_id
+                obj["halo_texture_id"] = texture_id
             _set_node_mesh(obj)
-            self.report({"INFO"}, f"已链接纹理 {texture_id}")
+            side = "内侧" if self.target == "INNER" else "外侧"
+            self.report({"INFO"}, f"已链接{side}纹理 {texture_id}")
+            return {"FINISHED"}
+
+
+    class HALO_OT_clear_inner_texture(bpy.types.Operator):
+        bl_idname = "halo.clear_inner_texture"
+        bl_label = "内侧使用外侧纹理"
+        bl_options = {"REGISTER", "UNDO"}
+
+        @classmethod
+        def poll(cls, context):
+            obj = _active_object(context)
+            return obj is not None and obj.get("halo_role") == PRIMITIVE_ROLE and obj.halo_node.primitive_type == "ring"
+
+        def execute(self, context):
+            obj = _active_object(context)
+            if obj is None or obj.get("halo_role") != PRIMITIVE_ROLE or obj.halo_node.primitive_type != "ring":
+                return {"CANCELLED"}
+            obj.halo_node.inner_texture = ""
+            obj["halo_inner_texture_id"] = ""
+            _set_node_mesh(obj)
+            self.report({"INFO"}, "Ring 内侧已改为使用外侧纹理")
             return {"FINISHED"}
 
 
@@ -762,6 +1319,382 @@ if bpy is not None:
             return {"FINISHED"}
 
 
+    class HALO_OT_transition_use_active_group(bpy.types.Operator):
+        bl_idname = "halo.transition_use_active_group"
+        bl_label = "使用当前组 ID"
+
+        def execute(self, context):
+            obj = _active_object(context)
+            if obj is not None and obj.get("halo_role") == PRIMITIVE_ROLE:
+                obj = obj.parent
+            if obj is None or obj.get("halo_role") != GROUP_ROLE:
+                self.report({"ERROR"}, "请先在 Outliner 或 3D 视图选择部件组")
+                return {"CANCELLED"}
+            group_id = str(getattr(obj.halo_node, "node_id", "") or "").strip()
+            if not group_id:
+                self.report({"ERROR"}, "当前组没有 ID，无法建立 id_overrides")
+                return {"CANCELLED"}
+            context.scene.halo_project.transition_group_id = group_id
+            return {"FINISHED"}
+
+
+    class HALO_OT_transition_segment_add(bpy.types.Operator):
+        bl_idname = "halo.transition_segment_add"
+        bl_label = "添加过渡段"
+        bl_options = {"REGISTER", "UNDO"}
+
+        duration: FloatProperty(name="时间（秒）", default=0.5, min=0.000001)
+        easing: EnumProperty(name="缓动曲线", items=EASING_ITEMS, default="linear")
+
+        def invoke(self, context, event):
+            return context.window_manager.invoke_props_dialog(self)
+
+        def execute(self, context):
+            try:
+                item, target, document, segments, _exists = _transition_segments(context, create=True)
+            except ValueError as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
+            segment = {"duration": float(self.duration), "easing": self.easing}
+            segments.append(segment)
+            context.scene.halo_project.transition_segment_index = len(segments) - 1
+            _store_transition_document(item, target, document)
+            _refresh_transition_preview(context)
+            return {"FINISHED"}
+
+
+    class HALO_OT_transition_segment_edit(bpy.types.Operator):
+        bl_idname = "halo.transition_segment_edit"
+        bl_label = "编辑过渡段"
+        bl_options = {"REGISTER", "UNDO"}
+
+        index: IntProperty(name="段", default=-1, min=-1, options={"HIDDEN"})
+        duration: FloatProperty(name="时间（秒）", default=0.5, min=0.000001)
+        easing: EnumProperty(name="缓动曲线", items=EASING_ITEMS, default="linear")
+
+        def invoke(self, context, event):
+            try:
+                _item, _target, _document, segments, _exists = _transition_segments(context)
+                index = self.index if self.index >= 0 else context.scene.halo_project.transition_segment_index
+                segment = segments[index]
+                self.duration = float(segment.get("duration", 0.0))
+                easing = str(segment.get("easing", "linear")).lower().replace("-", "_")
+                self.easing = easing if easing in {item[0] for item in EASING_ITEMS} else "linear"
+            except (ValueError, IndexError, TypeError, AttributeError) as exc:
+                self.report({"ERROR"}, f"所选过渡段不存在：{exc}")
+                return {"CANCELLED"}
+            return context.window_manager.invoke_props_dialog(self)
+
+        def execute(self, context):
+            try:
+                item, target, document, segments, _exists = _transition_segments(context)
+                index = self.index if self.index >= 0 else context.scene.halo_project.transition_segment_index
+                segment = segments[index]
+                if not isinstance(segment, dict):
+                    raise TypeError("段必须是 JSON 对象")
+            except (ValueError, IndexError, TypeError, AttributeError) as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
+            segment["duration"] = float(self.duration)
+            segment["easing"] = self.easing
+            _store_transition_document(item, target, document)
+            _refresh_transition_preview(context)
+            return {"FINISHED"}
+
+
+    class HALO_OT_transition_segment_remove(bpy.types.Operator):
+        bl_idname = "halo.transition_segment_remove"
+        bl_label = "删除过渡段"
+        bl_options = {"REGISTER", "UNDO"}
+
+        index: IntProperty(name="段", default=-1, min=-1, options={"HIDDEN"})
+
+        def execute(self, context):
+            try:
+                item, target, document, segments, _exists = _transition_segments(context)
+                index = self.index if self.index >= 0 else context.scene.halo_project.transition_segment_index
+                before_errors = _transition_boundary_errors(segments, target)
+                removed = segments.pop(index)
+                new_errors = _transition_boundary_errors(segments, target) - before_errors
+                if new_errors:
+                    segments.insert(index, removed)
+                    channel, _boundary_index, endpoint = sorted(new_errors)[0]
+                    raise ValueError(f"删除后 {channel} 的新边界缺少必填 {endpoint}")
+            except (ValueError, IndexError, TypeError, AttributeError) as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
+            context.scene.halo_project.transition_segment_index = max(0, min(index, len(segments) - 1))
+            _store_transition_document(item, target, document)
+            _refresh_transition_preview(context)
+            return {"FINISHED"}
+
+
+    class HALO_OT_transition_segment_move(bpy.types.Operator):
+        bl_idname = "halo.transition_segment_move"
+        bl_label = "移动过渡段"
+        bl_options = {"REGISTER", "UNDO"}
+
+        index: IntProperty(name="段", default=-1, min=-1, options={"HIDDEN"})
+        direction: IntProperty(name="方向", default=1)
+
+        def execute(self, context):
+            try:
+                item, target, document, segments, _exists = _transition_segments(context)
+                old = self.index if self.index >= 0 else context.scene.halo_project.transition_segment_index
+                if old < 0 or old >= len(segments):
+                    raise IndexError("所选过渡段不存在")
+                new = max(0, min(len(segments) - 1, old + int(self.direction)))
+                if new != old:
+                    before_errors = _transition_boundary_errors(segments, target)
+                    segments[old], segments[new] = segments[new], segments[old]
+                    new_errors = _transition_boundary_errors(segments, target) - before_errors
+                    if new_errors:
+                        segments[old], segments[new] = segments[new], segments[old]
+                        channel, _boundary_index, endpoint = sorted(new_errors)[0]
+                        raise ValueError(f"移动后 {channel} 的新边界缺少必填 {endpoint}")
+            except (ValueError, IndexError, TypeError, AttributeError) as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
+            context.scene.halo_project.transition_segment_index = new
+            _store_transition_document(item, target, document)
+            _refresh_transition_preview(context)
+            return {"FINISHED"}
+
+
+    class HALO_OT_transition_channel_edit(bpy.types.Operator):
+        bl_idname = "halo.transition_channel_edit"
+        bl_label = "编辑过渡通道"
+        bl_options = {"REGISTER", "UNDO"}
+
+        index: IntProperty(name="段", default=-1, min=-1, options={"HIDDEN"})
+        channel: EnumProperty(
+            name="通道",
+            items=(
+                ("offset", "Offset", "位置 [x, y, z]"),
+                ("scale", "Scale", "三轴缩放 [x, y, z]"),
+                ("alpha", "Alpha", "透明度标量"),
+                ("rotation", "Rotation", "YXZ 欧拉角 [yaw, pitch, roll]"),
+            ),
+            default="offset",
+        )
+        has_from: BoolProperty(name="填写 from", default=False)
+        from_value: FloatVectorProperty(name="From", size=3, default=(0.0, 0.0, 0.0), precision=5)
+        scalar_from: FloatProperty(name="From", default=1.0, precision=5)
+        has_to: BoolProperty(name="填写 to", default=False)
+        to_value: FloatVectorProperty(name="To", size=3, default=(0.0, 0.0, 0.0), precision=5)
+        scalar_to: FloatProperty(name="To", default=1.0, precision=5)
+        use_duration: BoolProperty(name="独立时间", default=False)
+        duration: FloatProperty(name="通道时间（秒）", default=0.5, min=0.000001)
+        use_easing: BoolProperty(name="独立缓动", default=False)
+        easing: EnumProperty(name="通道缓动曲线", items=EASING_ITEMS, default="linear")
+        use_degrees: BoolProperty(name="指定最小旋转行程", default=False)
+        degrees: FloatVectorProperty(name="Degrees YXZ", size=3, default=(0.0, 0.0, 0.0), precision=4)
+
+        def draw(self, context):
+            layout = self.layout
+            target = context.scene.halo_project.transition_target
+            required = "from" if target == "startup" else "to"
+            layout.label(text=f"{self.channel}；{target} 边界需要 {required}", icon="ANIM")
+            row = layout.row(align=True)
+            row.prop(self, "has_from")
+            values = row.row(align=True)
+            values.enabled = self.has_from
+            values.prop(self, "scalar_from" if self.channel == "alpha" else "from_value", text="")
+            row = layout.row(align=True)
+            row.prop(self, "has_to")
+            values = row.row(align=True)
+            values.enabled = self.has_to
+            values.prop(self, "scalar_to" if self.channel == "alpha" else "to_value", text="")
+            row = layout.row(align=True)
+            row.prop(self, "use_duration")
+            values = row.row(align=True)
+            values.enabled = self.use_duration
+            values.prop(self, "duration", text="")
+            row = layout.row(align=True)
+            row.prop(self, "use_easing")
+            values = row.row(align=True)
+            values.enabled = self.use_easing
+            values.prop(self, "easing", text="")
+            if self.channel == "rotation":
+                row = layout.row(align=True)
+                row.prop(self, "use_degrees")
+                values = row.row(align=True)
+                values.enabled = self.use_degrees
+                values.prop(self, "degrees", text="")
+
+        def invoke(self, context, event):
+            try:
+                _item, target, _document, segments, _exists = _transition_segments(context)
+                index = self.index if self.index >= 0 else context.scene.halo_project.transition_segment_index
+                segment = segments[index]
+                if not isinstance(segment, Mapping):
+                    raise TypeError("段必须是 JSON 对象")
+            except (ValueError, IndexError, TypeError, AttributeError) as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
+            _key, prop = _transition_channel_entry(segment, self.channel)
+            identity = _transition_identity(self.channel)
+            self.from_value = tuple(identity[:3]) if len(identity) == 3 else (0.0, 0.0, 0.0)
+            self.to_value = tuple(identity[:3]) if len(identity) == 3 else (0.0, 0.0, 0.0)
+            self.scalar_from = identity[0]
+            self.scalar_to = identity[0]
+            if prop is None:
+                self.has_from = target == "startup"
+                self.has_to = target == "shutdown"
+                self.use_duration = self.use_easing = self.use_degrees = False
+            else:
+                from_raw = prop.get("from")
+                to_raw = prop.get("to")
+                self.has_from = from_raw is not None
+                self.has_to = to_raw is not None
+                if self.channel == "alpha":
+                    if self.has_from:
+                        self.scalar_from = float(from_raw[0] if isinstance(from_raw, list) else from_raw)
+                    if self.has_to:
+                        self.scalar_to = float(to_raw[0] if isinstance(to_raw, list) else to_raw)
+                else:
+                    if self.has_from:
+                        self.from_value = _transition_vector3(from_raw, identity)
+                    if self.has_to:
+                        self.to_value = _transition_vector3(to_raw, identity)
+                self.use_duration = prop.get("duration") is not None
+                if self.use_duration:
+                    self.duration = max(0.000001, float(prop["duration"]))
+                self.use_easing = prop.get("easing") is not None
+                if self.use_easing:
+                    easing = str(prop["easing"]).lower().replace("-", "_")
+                    self.easing = easing if easing in {item[0] for item in EASING_ITEMS} else "linear"
+                degrees = prop.get("degrees")
+                self.use_degrees = self.channel == "rotation" and degrees is not None
+                if self.use_degrees:
+                    self.degrees = _transition_vector3(degrees)
+            return context.window_manager.invoke_props_dialog(self, width=520)
+
+        def execute(self, context):
+            try:
+                item, target, document, segments, _exists = _transition_segments(context)
+                index = self.index if self.index >= 0 else context.scene.halo_project.transition_segment_index
+                segment = segments[index]
+                if not isinstance(segment, dict):
+                    raise TypeError("段必须是 JSON 对象")
+            except (ValueError, IndexError, TypeError, AttributeError) as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
+            if not self.has_from and not self.has_to:
+                self.report({"ERROR"}, "通道至少需要 from 或 to")
+                return {"CANCELLED"}
+
+            # The Java parser requires from on the first active startup segment
+            # and to on the last active shutdown segment for each property.
+            active = []
+            for candidate_index, candidate in enumerate(segments):
+                if candidate_index == index:
+                    active.append(candidate_index)
+                    continue
+                if isinstance(candidate, Mapping):
+                    _candidate_key, candidate_prop = _transition_channel_entry(candidate, self.channel)
+                    if candidate_prop is not None:
+                        active.append(candidate_index)
+            if target == "startup" and index == min(active) and not self.has_from:
+                self.report({"ERROR"}, "startup 中此通道首次出现的段必须填写 from")
+                return {"CANCELLED"}
+            if target == "shutdown" and index == max(active) and not self.has_to:
+                self.report({"ERROR"}, "shutdown 中此通道最后出现的段必须填写 to")
+                return {"CANCELLED"}
+
+            key, existing = _transition_channel_entry(segment, self.channel)
+            if existing is None:
+                key = self.channel
+            prop = dict(existing or {})
+            if self.has_from:
+                prop["from"] = float(self.scalar_from) if self.channel == "alpha" else [float(value) for value in self.from_value]
+            else:
+                prop.pop("from", None)
+            if self.has_to:
+                prop["to"] = float(self.scalar_to) if self.channel == "alpha" else [float(value) for value in self.to_value]
+            else:
+                prop.pop("to", None)
+            if self.use_duration:
+                prop["duration"] = float(self.duration)
+            else:
+                prop.pop("duration", None)
+            if self.use_easing:
+                prop["easing"] = self.easing
+            else:
+                prop.pop("easing", None)
+            if self.channel == "rotation" and self.use_degrees:
+                prop["degrees"] = [float(value) for value in self.degrees]
+            else:
+                prop.pop("degrees", None)
+            segment[key] = prop
+            _store_transition_document(item, target, document)
+            _refresh_transition_preview(context)
+            return {"FINISHED"}
+
+
+    class HALO_OT_transition_channel_remove(bpy.types.Operator):
+        bl_idname = "halo.transition_channel_remove"
+        bl_label = "删除过渡通道"
+        bl_options = {"REGISTER", "UNDO"}
+
+        index: IntProperty(name="段", default=-1, min=-1, options={"HIDDEN"})
+        channel: EnumProperty(
+            name="通道",
+            items=(("offset", "Offset", ""), ("scale", "Scale", ""), ("alpha", "Alpha", ""), ("rotation", "Rotation", "")),
+            default="offset",
+        )
+
+        def execute(self, context):
+            try:
+                item, target, document, segments, _exists = _transition_segments(context)
+                index = self.index if self.index >= 0 else context.scene.halo_project.transition_segment_index
+                segment = segments[index]
+                key, existing = _transition_channel_entry(segment, self.channel)
+                if existing is None:
+                    raise KeyError("此段没有该通道")
+                before_errors = _transition_boundary_errors(segments, target)
+                segment.pop(key, None)
+                new_errors = _transition_boundary_errors(segments, target) - before_errors
+                if new_errors:
+                    segment[key] = dict(existing)
+                    channel, _boundary_index, endpoint = sorted(new_errors)[0]
+                    raise ValueError(f"删除后 {channel} 的新边界缺少必填 {endpoint}")
+            except (ValueError, IndexError, TypeError, AttributeError, KeyError) as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
+            _store_transition_document(item, target, document)
+            _refresh_transition_preview(context)
+            return {"FINISHED"}
+
+
+    class HALO_OT_transition_override_clear(bpy.types.Operator):
+        bl_idname = "halo.transition_override_clear"
+        bl_label = "删除当前 ID 覆盖"
+        bl_options = {"REGISTER", "UNDO"}
+
+        def execute(self, context):
+            project = context.scene.halo_project
+            group_id = str(project.transition_group_id or TRANSITION_DEFAULT_GROUP)
+            if group_id == TRANSITION_DEFAULT_GROUP:
+                self.report({"ERROR"}, "默认 segments 不是 ID 覆盖")
+                return {"CANCELLED"}
+            try:
+                item, target, document = _transition_document(context)
+                overrides = document.get("id_overrides")
+                if not isinstance(overrides, dict) or group_id not in overrides:
+                    raise KeyError("当前组没有独立 ID 覆盖")
+                overrides.pop(group_id)
+                if not overrides:
+                    document.pop("id_overrides", None)
+            except (ValueError, KeyError) as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
+            project.transition_segment_index = 0
+            _store_transition_document(item, target, document)
+            _refresh_transition_preview(context)
+            return {"FINISHED"}
+
+
     class HALO_OT_open_animation_json(bpy.types.Operator):
         bl_idname = "halo.open_animation_json"
         bl_label = "多行编辑动画 JSON"
@@ -881,11 +1814,15 @@ if bpy is not None:
         HALO_OT_export_zip,
         HALO_OT_add_group,
         HALO_OT_add_primitive,
+        HALO_OT_select_parent_group,
+        HALO_OT_nudge_transform,
         HALO_OT_duplicate_node,
         HALO_OT_delete_node,
         HALO_OT_reparent,
+        HALO_OT_move_primitive,
         HALO_OT_refresh_geometry,
         HALO_OT_import_texture,
+        HALO_OT_clear_inner_texture,
         HALO_OT_validate,
         HALO_OT_open_raw_json,
         HALO_OT_apply_raw_json,
@@ -897,6 +1834,14 @@ if bpy is not None:
         HALO_OT_animation_term_edit,
         HALO_OT_animation_term_remove,
         HALO_OT_animation_term_move,
+        HALO_OT_transition_use_active_group,
+        HALO_OT_transition_segment_add,
+        HALO_OT_transition_segment_edit,
+        HALO_OT_transition_segment_remove,
+        HALO_OT_transition_segment_move,
+        HALO_OT_transition_channel_edit,
+        HALO_OT_transition_channel_remove,
+        HALO_OT_transition_override_clear,
         HALO_OT_open_animation_json,
         HALO_OT_apply_animation_json,
         HALO_OT_return_3d_view,

@@ -12,7 +12,7 @@ try:
 except ImportError:  # pragma: no cover - Blender-only module
     bpy = None
 
-from .geometry import blender_rotation_to_mc_euler, blender_to_mc, mc_rotation_quaternion, mc_to_blender, uniform_scale
+from .geometry import mc_rotation_quaternion, mc_to_blender
 from .materials import set_material_visual
 
 _VIEW_DRAW_HANDLE = None
@@ -227,9 +227,20 @@ def _definition_raw(scene, root):
         for obj, group in zip(objects, groups if isinstance(groups, list) else ()):
             if not isinstance(group, Mapping):
                 continue
-            parsed = _load_json(getattr(obj.halo_node, "animation_json", "{}"), None)
+            node = obj.halo_node
+            parsed = _load_json(getattr(node, "animation_json", "{}"), None)
             if isinstance(parsed, Mapping):
                 group["animation"] = dict(parsed)
+            # Typed panel values must affect the current frame immediately;
+            # the definition-level raw JSON is synchronized lazily on export.
+            group["glowing"] = bool(node.glowing)
+            group["inherit_alpha"] = bool(node.inherit_alpha)
+            group["inherit_glow"] = bool(node.inherit_glow)
+            node_id = str(node.node_id).strip()
+            if node_id:
+                group["id"] = node_id
+            else:
+                group.pop("id", None)
             child_objects = sorted(
                 (child for child in obj.children if child.get("halo_role") == "group"),
                 key=lambda child: child.get("halo_path", child.name),
@@ -291,6 +302,50 @@ def _set_delta(obj, value):
         obj.delta_rotation_quaternion = quat
 
 
+def _set_root_local_animation(root, value):
+    """Compose definition animation after the MC head/halo anchor transform.
+
+    Minecraft's renderer applies ``T(anchor) R(anchor) S(positioning)`` first,
+    followed by the definition animation's ``T R S``.  Blender's object delta
+    location is not a local translation after the base rotation, so the root
+    must be composed explicitly from the base pose captured by
+    :func:`blender_scene.update_preview_roots`.
+    """
+
+    try:
+        from mathutils import Quaternion, Vector
+    except ImportError:  # pragma: no cover - Blender-only helper
+        _set_delta(root, value)
+        return
+
+    base_location = Vector(root.get("halo_preview_base_location", tuple(root.location)))
+    base_rotation = Quaternion(root.get("halo_preview_base_rotation", tuple(root.rotation_quaternion)))
+    base_scale = Vector(root.get("halo_preview_base_scale", tuple(root.scale)))
+    local_offset = Vector(mc_to_blender(value.get("offset", (0.0, 0.0, 0.0))))
+    scaled_offset = Vector((
+        local_offset.x * base_scale.x,
+        local_offset.y * base_scale.y,
+        local_offset.z * base_scale.z,
+    ))
+    animation_rotation = mc_rotation_quaternion(value.get("rotation", (0.0, 0.0, 0.0)))
+    animation_scale = Vector(value.get("scale", (1.0, 1.0, 1.0)))
+
+    root.location = base_location + base_rotation @ scaled_offset
+    root.rotation_mode = "QUATERNION"
+    root.rotation_quaternion = base_rotation @ (animation_rotation or Quaternion())
+    root.scale = Vector((
+        base_scale.x * animation_scale.x,
+        base_scale.y * animation_scale.y,
+        base_scale.z * animation_scale.z,
+    ))
+
+    # Older extension builds stored definition animation in delta transforms.
+    # Clear those values so reopening an old .blend cannot apply it twice.
+    root.delta_location = (0.0, 0.0, 0.0)
+    root.delta_rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+    root.delta_scale = (1.0, 1.0, 1.0)
+
+
 def _apply_object_animation(scene, root, obj, idle_time: float, mode: str, transition_time: float, transition_data):
     raw = _load_json(obj.get("halo_animation_json", "{}"))
     evaluated = evaluate_layer_animation(raw, idle_time)
@@ -313,7 +368,10 @@ def _apply_object_animation(scene, root, obj, idle_time: float, mode: str, trans
                 evaluated["scale"] = value
             elif key == "rotation":
                 evaluated["rotation"] = value
-    _set_delta(obj, evaluated)
+    if obj is root:
+        _set_root_local_animation(root, evaluated)
+    else:
+        _set_delta(obj, evaluated)
     return evaluated
 
 
@@ -368,7 +426,7 @@ def _core_scene_animation(scene, root, raw: Mapping[str, Any], time_seconds: flo
             # TransitionResult intentionally has no glow channel; resident
             # glow remains active while alpha/transform transition.
             root_state.update({"offset": transition.offset, "scale": transition.scale, "rotation": transition.rotation, "alpha": transition.alpha})
-        _set_delta(root, root_state)
+        _set_root_local_animation(root, root_state)
         root["halo_preview_alpha"] = max(0.0, min(1.0, float(root_state.get("alpha", 1.0))))
         root["halo_preview_glow"] = max(0.0, min(1.0, float(root_state.get("glow", 1.0))))
 
@@ -507,6 +565,11 @@ if bpy is not None:
     def halo_load_post(_dummy):
         for scene in bpy.data.scenes:
             try:
+                from .blender_scene import enforce_managed_transform_locks, update_preview_roots
+                enforce_managed_transform_locks(scene, restore=True)
+                # Rebuild the non-animated anchor pose before evaluating files
+                # saved by an older build that has no cached base transform.
+                update_preview_roots(scene)
                 update_animation(scene)
             except Exception:
                 pass
@@ -514,28 +577,13 @@ if bpy is not None:
 
     @persistent
     def halo_depsgraph_update(scene, depsgraph):
-        """Mirror viewport G/R/S edits back to the typed MC coordinate fields."""
+        """Track Outliner selection; static transforms are panel-owned."""
 
         active = getattr(getattr(bpy.context, "view_layer", None), "objects", None)
         active = getattr(active, "active", None)
         if active is not None and active.get("halo_definition_id") and getattr(scene, "halo_project", None) is not None:
             scene.halo_project.active_definition = active.get("halo_definition_id")
             scene.halo_project.active_uuid = active.get("halo_uuid", "")
-        for update in depsgraph.updates:
-            obj = getattr(update, "id", None)
-            if not isinstance(obj, bpy.types.Object) or obj.get("halo_role") != "group":
-                continue
-            node = getattr(obj, "halo_node", None)
-            if node is None or obj.get("halo_property_update_guard"):
-                continue
-            try:
-                obj["halo_property_update_guard"] = True
-                node.position = blender_to_mc(obj.location)
-                rotation = obj.rotation_quaternion if obj.rotation_mode == "QUATERNION" else obj.rotation_euler
-                node.rotation = blender_rotation_to_mc_euler(rotation)
-                node.scale = uniform_scale(obj.scale)[0]
-            finally:
-                obj.pop("halo_property_update_guard", None)
 
 
     HANDLER_FUNCTIONS = (halo_frame_change, halo_load_post, halo_depsgraph_update)
@@ -553,6 +601,16 @@ def register_handlers():
         bpy.app.handlers.load_post.append(halo_load_post)
     if halo_depsgraph_update not in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.append(halo_depsgraph_update)
+    try:
+        scenes = list(bpy.data.scenes)
+    except (AttributeError, RuntimeError):
+        scenes = ()
+    for scene in scenes:
+        try:
+            from .blender_scene import enforce_managed_transform_locks
+            enforce_managed_transform_locks(scene, restore=True)
+        except Exception:
+            pass
     if _VIEW_DRAW_HANDLE is None:
         _VIEW_DRAW_HANDLE = bpy.types.SpaceView3D.draw_handler_add(_draw_face_camera, (), "WINDOW", "POST_VIEW")
 

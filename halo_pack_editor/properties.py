@@ -8,6 +8,8 @@ compatibility with a newer Halo schema.
 
 from __future__ import annotations
 
+import json
+
 try:
     import bpy
     from bpy.props import (
@@ -34,6 +36,10 @@ PREVIEW_MODE_ITEMS = (
     ("SHUTDOWN", "关闭过渡", "预览 shutdown 过渡"),
     ("SEQUENCE", "完整序列", "启动、常驻和关闭的完整序列"),
 )
+TRANSFORM_PRECISION_ITEMS = (
+    ("COARSE", "粗调", "使用较大的位置、旋转和缩放步长"),
+    ("FINE", "细调", "使用较小的精细步长"),
+)
 NODE_ROLE_ITEMS = (
     ("group", "部件组", "可拥有子组和图元的层级节点"),
     ("primitive", "图元", "Billboard 或 Ring 几何图元"),
@@ -48,7 +54,14 @@ ANIMATION_CHANNEL_ITEMS = tuple((value, value, value) for value in (
     "rotation.yaw", "rotation.pitch", "rotation.roll",
     "scale.x", "scale.y", "scale.z", "alpha", "glow",
 ))
-EASING_ITEMS = tuple((value, value, value) for value in ("linear", "ease_in", "ease_out", "ease_in_out"))
+EASING_ITEMS = (
+    ("linear", "Linear", "匀速插值"),
+    ("ease_out_cubic", "Ease Out Cubic", "快速开始，末尾减速"),
+    ("ease_in_out_cubic", "Ease In Out Cubic", "慢速开始和结束，中段加速"),
+)
+
+TRANSITION_DEFAULT_GROUP = "__HALO_DEFAULT__"
+_TRANSITION_GROUP_ITEMS_CACHE = []
 
 
 def _scene_preview_update(self, context):
@@ -64,6 +77,44 @@ def _scene_preview_update(self, context):
         pass
 
 
+def _transition_selection_update(self, context):
+    """Reset the selected row when switching transition/group timelines."""
+
+    try:
+        self.transition_segment_index = 0
+    except (AttributeError, TypeError):
+        pass
+
+
+def _transition_group_items(self, context):
+    """Return the default timeline plus every authored group ID in the tree."""
+
+    del _TRANSITION_GROUP_ITEMS_CACHE[:]
+    _TRANSITION_GROUP_ITEMS_CACHE.append((
+        TRANSITION_DEFAULT_GROUP,
+        "默认（光环根与未覆盖组）",
+        "顶层 segments；同时用于光环根及没有独立 ID 覆盖的组",
+    ))
+    if bpy is None:
+        return _TRANSITION_GROUP_ITEMS_CACHE
+    definition_id = str(getattr(self, "active_definition", ""))
+    seen = set()
+    for obj in bpy.data.objects:
+        if obj.get("halo_role") != "group" or obj.get("halo_definition_id") != definition_id:
+            continue
+        node = getattr(obj, "halo_node", None)
+        group_id = str(getattr(node, "node_id", "") or "").strip()
+        if not group_id or group_id in seen:
+            continue
+        seen.add(group_id)
+        _TRANSITION_GROUP_ITEMS_CACHE.append((group_id, group_id, f"编辑组 ID {group_id} 的 id_overrides"))
+    _TRANSITION_GROUP_ITEMS_CACHE[1:] = sorted(_TRANSITION_GROUP_ITEMS_CACHE[1:], key=lambda item: item[0].casefold())
+    stored = str(self.get("transition_group_id", TRANSITION_DEFAULT_GROUP))
+    if stored and stored != TRANSITION_DEFAULT_GROUP and stored not in seen:
+        _TRANSITION_GROUP_ITEMS_CACHE.append((stored, f"{stored}（当前定义中未找到）", "保留 JSON 中的旧 ID 覆盖"))
+    return _TRANSITION_GROUP_ITEMS_CACHE
+
+
 def _active_definition_index_update(self, context):
     """Keep the string ID used by operators in sync with the UIList index."""
 
@@ -72,6 +123,141 @@ def _active_definition_index_update(self, context):
             self.active_definition = self.definitions[int(self.active_definition_index)].definition_id
     except (AttributeError, IndexError, TypeError, ValueError):
         pass
+
+
+def _definition_id_update(self, context):
+    """Rename a definition and every scene/UI reference as one operation."""
+
+    if self.get("halo_definition_id_update_guard"):
+        return
+    new_id = str(self.definition_id).strip()
+    old_id = str(self.get("halo_previous_definition_id", ""))
+    scene = getattr(self, "id_data", None)
+    project = getattr(scene, "halo_project", None)
+    root_uuid = str(getattr(self, "root_uuid", ""))
+    root_hint = None
+    if bpy is not None and root_uuid:
+        root_hint = next((obj for obj in bpy.data.objects if obj.get("halo_uuid") == root_uuid), None)
+        if not old_id and root_hint is not None:
+            old_id = str(root_hint.get("halo_definition_id", ""))
+    if not new_id:
+        if old_id:
+            self["halo_definition_id_update_guard"] = True
+            try:
+                self.definition_id = old_id
+            finally:
+                self.pop("halo_definition_id_update_guard", None)
+        if project is not None:
+            project["halo_definition_id_error"] = "光环 ID 不能为空"
+        return
+    if project is not None:
+        duplicate = next((
+            item for item in project.definitions
+            if item.as_pointer() != self.as_pointer() and item.definition_id == new_id
+        ), None)
+        if duplicate is not None:
+            self["halo_definition_id_update_guard"] = True
+            try:
+                self.definition_id = old_id
+            finally:
+                self.pop("halo_definition_id_update_guard", None)
+            project["halo_definition_id_error"] = f"光环 ID 已存在：{new_id}"
+            return
+        project.pop("halo_definition_id_error", None)
+
+    self["halo_previous_definition_id"] = new_id
+    self.namespace = new_id.split(":", 1)[0] if ":" in new_id else (self.namespace or "minecraft")
+    try:
+        raw = json.loads(self.raw_json or "{}")
+    except (TypeError, ValueError):
+        raw = {}
+    if isinstance(raw, dict):
+        raw["id"] = new_id
+        self.raw_json = json.dumps(raw, ensure_ascii=False, indent=2)
+
+    if bpy is None:
+        return
+    root = root_hint
+    if root is None and old_id:
+        root = next((obj for obj in bpy.data.objects if obj.get("halo_role") == "definition_root" and obj.get("halo_definition_id") == old_id), None)
+    scene_old_id = str(root.get("halo_definition_id", old_id)) if root is not None else old_id
+    if root is not None:
+        try:
+            root_raw = json.loads(root.get("halo_raw_json", "{}"))
+        except (TypeError, ValueError):
+            root_raw = {}
+        if isinstance(root_raw, dict):
+            root_raw["id"] = new_id
+            root["halo_raw_json"] = json.dumps(root_raw, ensure_ascii=False, indent=2)
+        root.name = f"Halo · {new_id}"
+    if scene_old_id:
+        for obj in bpy.data.objects:
+            if obj.get("halo_definition_id") != scene_old_id:
+                continue
+            obj["halo_definition_id"] = new_id
+            node = getattr(obj, "halo_node", None)
+            if node is not None:
+                node.definition_id = new_id
+        for text in bpy.data.texts:
+            if text.get("halo_definition_id") == scene_old_id:
+                text["halo_definition_id"] = new_id
+    if project is not None:
+        selected_index = int(getattr(project, "active_definition_index", -1))
+        selected_item = project.definitions[selected_index] if 0 <= selected_index < len(project.definitions) else None
+        if project.active_definition in {scene_old_id, old_id, new_id} or selected_item == self:
+            project.active_definition = new_id
+
+
+def _definition_damping_update(self, context):
+    """Write damping panel edits into both lossless definition JSON copies."""
+
+    if self.get("halo_damping_update_guard"):
+        return
+    self["halo_damping_update_guard"] = True
+    try:
+        try:
+            raw = json.loads(self.raw_json or "{}")
+        except (TypeError, ValueError):
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+        damping = raw.get("damping")
+        damping = dict(damping) if isinstance(damping, dict) else {}
+        damping.update({
+            "linearFactor": float(self.damping_linear_factor),
+            "angularFactor": float(self.damping_angular_factor),
+            "maxLinearDistance": float(self.damping_max_linear),
+            "maxAngularDegrees": float(self.damping_max_angular),
+            "angularMomentumFactor": float(self.damping_angular_momentum_factor),
+            "maxAngularMomentumDegrees": float(self.damping_max_angular_momentum),
+        })
+        raw["damping"] = damping
+        raw["allow_angular_momentum"] = bool(self.allow_angular_momentum)
+        self.raw_json = json.dumps(raw, ensure_ascii=False, indent=2)
+
+        if bpy is not None:
+            for obj in bpy.data.objects:
+                if obj.get("halo_role") != "definition_root":
+                    continue
+                if self.root_uuid and obj.get("halo_uuid") != self.root_uuid:
+                    continue
+                if not self.root_uuid and obj.get("halo_definition_id") != self.definition_id:
+                    continue
+                try:
+                    root_raw = json.loads(obj.get("halo_raw_json", "{}"))
+                except (TypeError, ValueError):
+                    root_raw = {}
+                if not isinstance(root_raw, dict):
+                    root_raw = {}
+                root_damping = root_raw.get("damping")
+                root_damping = dict(root_damping) if isinstance(root_damping, dict) else {}
+                root_damping.update(damping)
+                root_raw["damping"] = root_damping
+                root_raw["allow_angular_momentum"] = bool(self.allow_angular_momentum)
+                obj["halo_raw_json"] = json.dumps(root_raw, ensure_ascii=False, indent=2)
+                break
+    finally:
+        self.pop("halo_damping_update_guard", None)
 
 
 def _node_transform_update(self, context):
@@ -92,9 +278,95 @@ def _node_transform_update(self, context):
             obj.rotation_quaternion = quat
         value = float(self.scale)
         obj.scale = (value, value, value)
+        try:
+            raw = json.loads(obj.get("halo_raw_json", "{}"))
+        except (TypeError, ValueError):
+            raw = {}
+        if isinstance(raw, dict):
+            raw["position"] = [float(value) for value in self.position]
+            raw["rotation"] = [float(value) for value in self.rotation]
+            raw["scale"] = float(self.scale)
+            obj["halo_raw_json"] = json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
     finally:
         if obj is not None:
             obj.pop("halo_property_update_guard", None)
+
+
+def _node_group_update(self, context):
+    """Apply group metadata immediately and refresh the current preview."""
+
+    obj = getattr(self, "id_data", None)
+    if obj is None or getattr(obj, "get", lambda *_: None)("halo_role") != "group":
+        return
+    if obj.get("halo_property_update_guard"):
+        return
+    try:
+        raw = json.loads(obj.get("halo_raw_json", "{}"))
+    except (TypeError, ValueError):
+        raw = {}
+    if isinstance(raw, dict):
+        node_id = str(self.node_id).strip()
+        if node_id:
+            raw["id"] = node_id
+        else:
+            raw.pop("id", None)
+        raw["glowing"] = bool(self.glowing)
+        raw["inherit_alpha"] = bool(self.inherit_alpha)
+        raw["inherit_glow"] = bool(self.inherit_glow)
+        obj["halo_raw_json"] = json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
+    try:
+        from .handlers import update_animation
+        if context and context.scene:
+            update_animation(context.scene)
+    except Exception:
+        pass
+
+
+def _primitive_geometry_update(self, context):
+    """Rebuild primitive geometry/materials after a typed field changes."""
+
+    obj = getattr(self, "id_data", None)
+    if obj is None or getattr(obj, "get", lambda *_: None)("halo_role") != "primitive":
+        return
+    if obj.get("halo_property_update_guard"):
+        return
+    try:
+        from .operators import _set_node_mesh
+        obj["halo_property_update_guard"] = True
+        obj["halo_face_camera"] = bool(self.face_camera)
+        _set_node_mesh(obj)
+    except Exception:
+        # A partially loaded file can invoke updates before the object's mesh
+        # or the extension operators are available.  Manual refresh remains
+        # available as a recovery path.
+        pass
+    finally:
+        obj.pop("halo_property_update_guard", None)
+
+
+def _primitive_face_camera_update(self, context):
+    obj = getattr(self, "id_data", None)
+    if obj is None or getattr(obj, "get", lambda *_: None)("halo_role") != "primitive":
+        return
+    if obj.get("halo_property_update_guard"):
+        return
+    try:
+        from .operators import _set_node_mesh
+        obj["halo_property_update_guard"] = True
+        # Recreate the primitive from its typed fields and restore identity.
+        # This discards the temporary camera-facing viewport rotation when the
+        # option is disabled and gives "强制刷新" the same repair semantics.
+        _set_node_mesh(obj)
+    except Exception:
+        obj["halo_face_camera"] = bool(self.face_camera)
+    finally:
+        obj.pop("halo_property_update_guard", None)
+    try:
+        if bool(self.face_camera) and context and context.scene:
+            from .handlers import update_face_camera
+            update_face_camera(context.scene)
+    except Exception:
+        pass
 
 
 if bpy is not None:
@@ -144,23 +416,24 @@ if bpy is not None:
         uuid: StringProperty(name="UUID", default="", options={"HIDDEN"})
         definition_id: StringProperty(name="光环 ID", default="", options={"HIDDEN"})
         role: EnumProperty(name="节点类型", items=NODE_ROLE_ITEMS, default="group")
-        node_id: StringProperty(name="部件 ID", default="")
+        node_id: StringProperty(name="部件 ID", default="", update=_node_group_update)
         primitive_type: EnumProperty(
             name="图元类型",
             items=(("billboard", "Billboard", "水平四边形"), ("ring", "Ring", "圆环/圆柱")),
             default="billboard",
+            update=_primitive_geometry_update,
         )
         position: FloatVectorProperty(name="位置", size=3, default=(0.0, 0.0, 0.0), precision=5, update=_node_transform_update)
         rotation: FloatVectorProperty(name="旋转 YXZ", size=3, default=(0.0, 0.0, 0.0), precision=4, update=_node_transform_update)
         scale: FloatProperty(name="缩放", default=1.0, precision=5, update=_node_transform_update)
-        glowing: BoolProperty(name="发光", default=True)
-        inherit_alpha: BoolProperty(name="继承 Alpha", default=True)
-        inherit_glow: BoolProperty(name="继承 Glow", default=True)
-        texture: StringProperty(name="纹理", default="")
-        inner_texture: StringProperty(name="内侧纹理", default="")
-        size: FloatVectorProperty(name="尺寸", size=2, default=(1.0, 1.0), min=0.0, precision=5)
-        segments: IntProperty(name="分段数", default=32, min=3, max=4096)
-        face_camera: BoolProperty(name="面向相机", default=False)
+        glowing: BoolProperty(name="发光", default=True, update=_node_group_update)
+        inherit_alpha: BoolProperty(name="继承 Alpha", default=True, update=_node_group_update)
+        inherit_glow: BoolProperty(name="继承 Glow", default=True, update=_node_group_update)
+        texture: StringProperty(name="纹理", default="", update=_primitive_geometry_update)
+        inner_texture: StringProperty(name="内侧纹理", default="", update=_primitive_geometry_update)
+        size: FloatVectorProperty(name="尺寸", size=2, default=(1.0, 1.0), min=0.0, precision=5, update=_primitive_geometry_update)
+        segments: IntProperty(name="分段数", default=32, min=3, max=4096, update=_primitive_geometry_update)
+        face_camera: BoolProperty(name="面向相机", default=False, update=_primitive_face_camera_update)
         animation_json: StringProperty(name="常驻动画 JSON", default="")
         raw_json: StringProperty(name="原始 JSON", default="", options={"HIDDEN"})
         parent_uuid: StringProperty(name="父级 UUID", default="", options={"HIDDEN"})
@@ -169,7 +442,7 @@ if bpy is not None:
 
 
     class HaloDefinitionPG(bpy.types.PropertyGroup):
-        definition_id: StringProperty(name="Definition ID", default="")
+        definition_id: StringProperty(name="Definition ID", default="", update=_definition_id_update)
         namespace: StringProperty(name="命名空间", default="minecraft")
         source_path: StringProperty(name="JSON 文件", default="", subtype="FILE_PATH")
         raw_json: StringProperty(name="完整 JSON", default="", options={"HIDDEN"})
@@ -186,15 +459,33 @@ if bpy is not None:
         sync_offset: FloatVectorProperty(name="同步偏移", size=3, default=(0.0, 0.0, 0.0), precision=4, update=_scene_preview_update)
         positioning_offset: FloatVectorProperty(name="头部偏移", size=3, default=(0.0, 0.0, 0.0), precision=5, update=_scene_preview_update)
         positioning_scale: FloatProperty(name="整体缩放", default=1.0, precision=5, update=_scene_preview_update)
-        allow_angular_momentum: BoolProperty(name="允许角动量", default=False)
+        allow_angular_momentum: BoolProperty(name="允许角动量", default=False, update=_definition_damping_update)
         hide_on_sleep: BoolProperty(name="睡眠时隐藏", default=False)
         display_in_invisible: BoolProperty(name="隐形时显示", default=False)
-        damping_linear_factor: FloatProperty(name="线性阻尼", default=0.15)
-        damping_angular_factor: FloatProperty(name="角阻尼", default=0.1)
-        damping_max_linear: FloatProperty(name="最大线性距离", default=3.0, min=0.0)
-        damping_max_angular: FloatProperty(name="最大角度", default=180.0, min=0.0)
-        damping_angular_momentum_factor: FloatProperty(name="角动量因子", default=0.3)
-        damping_max_angular_momentum: FloatProperty(name="最大角动量角度", default=45.0, min=0.0)
+        damping_linear_factor: FloatProperty(
+            name="线性阻尼系数", description="linearFactor；通常为 0 到 1，越接近 1 越快贴近目标位置，越接近 0 跟随越慢",
+            default=0.15, soft_min=0.0, soft_max=1.0, precision=5, update=_definition_damping_update,
+        )
+        damping_angular_factor: FloatProperty(
+            name="角度阻尼系数", description="angularFactor；通常为 0 到 1，越接近 1 越快贴近目标朝向，越接近 0 跟随越慢",
+            default=0.1, soft_min=0.0, soft_max=1.0, precision=5, update=_definition_damping_update,
+        )
+        damping_max_linear: FloatProperty(
+            name="最大线性偏移", description="maxLinearDistance；单位为 Minecraft 方块",
+            default=3.0, min=0.0, precision=5, update=_definition_damping_update,
+        )
+        damping_max_angular: FloatProperty(
+            name="最大角度偏移", description="maxAngularDegrees；单位为度",
+            default=180.0, min=0.0, precision=4, update=_definition_damping_update,
+        )
+        damping_angular_momentum_factor: FloatProperty(
+            name="角动量响应系数", description="angularMomentumFactor；通常为 0 到 1，越接近 1 越快响应目标朝向，越接近 0 响应越慢",
+            default=0.3, soft_min=0.0, soft_max=1.0, precision=5, update=_definition_damping_update,
+        )
+        damping_max_angular_momentum: FloatProperty(
+            name="最大角动量偏角", description="maxAngularMomentumDegrees；单位为度",
+            default=45.0, min=0.0, precision=4, update=_definition_damping_update,
+        )
         animation_json: StringProperty(name="常驻动画 JSON", default="")
         startup_json: StringProperty(name="启动动画 JSON", default="")
         shutdown_json: StringProperty(name="关闭动画 JSON", default="")
@@ -218,7 +509,17 @@ if bpy is not None:
         transition_duration: FloatProperty(name="过渡时长", default=1.0, min=0.0)
         animation_channel: EnumProperty(name="动画通道", items=ANIMATION_CHANNEL_ITEMS, default="offset.x")
         animation_term_index: IntProperty(name="动画项索引", default=0, min=0)
-        transition_target: EnumProperty(name="过渡目标", items=(("startup", "启动", ""), ("shutdown", "关闭", "")), default="startup")
+        transition_target: EnumProperty(
+            name="过渡目标",
+            items=(("startup", "启动", ""), ("shutdown", "关闭", "")),
+            default="startup",
+            update=_transition_selection_update,
+        )
+        transition_group_id: EnumProperty(
+            name="组 ID",
+            items=_transition_group_items,
+            update=_transition_selection_update,
+        )
         transition_segment_index: IntProperty(name="过渡段索引", default=0, min=0)
         head_yaw: FloatProperty(name="头部 Yaw", default=0.0, update=_scene_preview_update)
         head_pitch: FloatProperty(name="头部 Pitch", default=0.0, update=_scene_preview_update)
@@ -226,6 +527,13 @@ if bpy is not None:
         show_head: BoolProperty(name="显示玩家头部", default=True, update=_scene_preview_update)
         neutral_environment: FloatProperty(name="非发光亮度", default=0.25, min=0.0, max=1.0)
         preserve_world_on_reparent: BoolProperty(name="重设父级保持世界位置", default=True)
+        transform_precision: EnumProperty(name="变换精度", items=TRANSFORM_PRECISION_ITEMS, default="FINE")
+        coarse_position_step: FloatProperty(name="粗调位置步长", default=0.1, min=0.00001, precision=5)
+        coarse_rotation_step: FloatProperty(name="粗调旋转步长", default=5.0, min=0.0001, precision=4)
+        coarse_scale_step: FloatProperty(name="粗调缩放步长", default=0.1, min=0.00001, precision=5)
+        fine_position_step: FloatProperty(name="细调位置步长", default=0.01, min=0.00001, precision=5)
+        fine_rotation_step: FloatProperty(name="细调旋转步长", default=0.5, min=0.0001, precision=4)
+        fine_scale_step: FloatProperty(name="细调缩放步长", default=0.01, min=0.00001, precision=5)
         raw_text_name: StringProperty(name="JSON 文本块", default="", options={"HIDDEN"})
         validation_json: StringProperty(name="验证结果", default="")
         definitions: CollectionProperty(type=HaloDefinitionPG)
