@@ -1327,6 +1327,19 @@ if bpy is not None:
             return {"FINISHED"}
 
 
+    class HALO_OT_refresh_render_materials(bpy.types.Operator):
+        bl_idname = "halo.refresh_render_materials"
+        bl_label = "刷新 Halo 渲染材质"
+        bl_description = "升级全部 Halo 材质；在 Cycles 中通过着色器背面检测复现 Ring 单面剔除"
+        bl_options = {"REGISTER", "UNDO"}
+
+        def execute(self, context):
+            count = refresh_halo_material_settings()
+            renderer = "Cycles" if context.scene.render.engine == "CYCLES" else context.scene.render.engine
+            self.report({"INFO"}, f"已为 {renderer} 刷新 {count} 个 Halo 材质")
+            return {"FINISHED"}
+
+
     class HALO_OT_play_preview(bpy.types.Operator):
         bl_idname = "halo.play_preview"
         bl_label = "播放动画预览"
@@ -1990,6 +2003,7 @@ if bpy is not None:
         HALO_OT_sync_scene,
         HALO_OT_set_preview_space,
         HALO_OT_configure_eevee_preview,
+        HALO_OT_refresh_render_materials,
         HALO_OT_play_preview,
         HALO_OT_stop_preview,
         HALO_OT_animation_term_add,

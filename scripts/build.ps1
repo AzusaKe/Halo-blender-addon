@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $extensionRoot = Join-Path $projectRoot 'halo_pack_editor'
 $distRoot = Join-Path $projectRoot 'dist'
-$packagePath = Join-Path $distRoot 'halo_pack_editor-0.1.15.zip'
+$packagePath = Join-Path $distRoot 'halo_pack_editor-0.1.16.zip'
 
 if (-not (Test-Path -LiteralPath $BlenderExe)) {
     throw "Blender 5.2 executable not found: $BlenderExe"
@@ -42,7 +42,7 @@ if ((Test-Path -LiteralPath $reopenTest) -and (Test-Path -LiteralPath $blendFile
 $renderTest = Join-Path $PSScriptRoot 'blender_render_test.py'
 if (Test-Path -LiteralPath $renderTest) {
     & $BlenderExe --background --factory-startup --python-exit-code 1 --python $renderTest -- $projectRoot
-    if ($LASTEXITCODE -ne 0) { throw 'Blender EEVEE render test failed' }
+    if ($LASTEXITCODE -ne 0) { throw 'Blender EEVEE/Cycles render test failed' }
 }
 
 Write-Host "Built and validated: $packagePath"

@@ -273,6 +273,9 @@ if bpy is not None:
             if context.scene.render.engine == "BLENDER_EEVEE":
                 renderer.label(text="预览渲染器：EEVEE（抖动透明）", icon="CHECKMARK")
                 renderer.operator("halo.configure_eevee_preview", text="刷新 EEVEE 材质", icon="FILE_REFRESH")
+            elif context.scene.render.engine == "CYCLES":
+                renderer.label(text="预览渲染器：Cycles（节点面剔除）", icon="CHECKMARK")
+                renderer.operator("halo.refresh_render_materials", text="刷新 Cycles 材质", icon="FILE_REFRESH")
             else:
                 renderer.label(text="当前渲染器不保证 Halo 面剔除", icon="ERROR")
                 renderer.operator("halo.configure_eevee_preview", text="切换到 EEVEE 一致性预览", icon="RENDER_STILL")

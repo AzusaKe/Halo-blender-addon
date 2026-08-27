@@ -333,12 +333,47 @@ for primitive in primitives:
     assert not material.use_transparency_overlap
     assert not material.show_transparent_back
     assert any(node.name == "Halo Preview Alpha" for node in material.node_tree.nodes)
+    shader_culling = bool(material.get("halo_shader_backface_culling"))
+    assert shader_culling == material.use_backface_culling
+    assert bool(material.node_tree.nodes.get("Halo Backface Mix")) == material.use_backface_culling
 
 legacy_material = primitives[0].data.materials[0]
 legacy_material.surface_render_method = "BLENDED"
+
+# Simulate a culled Ring material saved by 0.1.15: it has the EEVEE culling
+# flag but no shader-level fallback.  Refresh must upgrade it for Cycles.
+legacy_culled = next(
+    material
+    for primitive in primitives
+    for material in primitive.data.materials
+    if material and material.use_backface_culling
+)
+legacy_nodes = legacy_culled.node_tree.nodes
+legacy_links = legacy_culled.node_tree.links
+for node_name in (
+    "Halo Backface Geometry",
+    "Halo Backface Transparent",
+    "Halo Backface Texture",
+    "Halo Backface Preview Alpha",
+    "Halo Backface Principled",
+    "Halo Backface Mix",
+):
+    node = legacy_nodes.get(node_name)
+    if node is not None:
+        legacy_nodes.remove(node)
+for property_name in ("halo_backface_texture_id", "halo_shader_backface_mode"):
+    if property_name in legacy_culled:
+        del legacy_culled[property_name]
+legacy_output = next(node for node in legacy_nodes if node.bl_idname == "ShaderNodeOutputMaterial")
+legacy_shader = next(node for node in legacy_nodes if node.bl_idname == "ShaderNodeBsdfPrincipled")
+legacy_links.new(legacy_shader.outputs["BSDF"], legacy_output.inputs["Surface"])
+legacy_culled["halo_shader_backface_culling"] = False
 assert bpy.ops.halo.configure_eevee_preview() == {"FINISHED"}
 assert scene.render.engine == "BLENDER_EEVEE"
 assert legacy_material.surface_render_method == "DITHERED"
+assert legacy_culled.get("halo_shader_backface_culling") is True
+assert legacy_culled.node_tree.nodes.get("Halo Backface Mix") is not None
+assert legacy_culled.get("halo_shader_backface_mode") == "PAIRED_TEXTURE"
 
 # Ring outer/inner textures have separate file-picker targets.  Clearing the
 # inner texture returns to one double-sided surface; importing an inner PNG

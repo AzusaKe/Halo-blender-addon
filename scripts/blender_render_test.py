@@ -1,4 +1,4 @@
-"""Rendered EEVEE regression tests for Halo transparency and Ring culling."""
+"""Rendered EEVEE/Cycles regression tests for transparency and Ring culling."""
 
 from __future__ import annotations
 
@@ -46,11 +46,26 @@ def image(name, left, right=None):
     return result
 
 
-def material(name, texture_image, *, cull=False):
-    result = create_halo_material(f"test:{name}.png", glowing=True, backface_culling=cull, name=name)
-    texture = next(node for node in result.node_tree.nodes if node.bl_idname == "ShaderNodeTexImage")
+def material(name, texture_image, *, cull=False, backface=None):
+    backface_id = f"test:{backface[0]}.png" if backface else None
+    result = create_halo_material(
+        f"test:{name}.png",
+        glowing=True,
+        backface_culling=cull,
+        backface_texture_id=backface_id,
+        name=name,
+    )
+    texture = next(
+        node for node in result.node_tree.nodes
+        if node.bl_idname == "ShaderNodeTexImage" and node.name != "Halo Backface Texture"
+    )
     texture.image = texture_image
     texture.interpolation = "Closest"
+    if backface:
+        paired = result.node_tree.nodes["Halo Backface Texture"]
+        paired.image = backface[1]
+        paired.interpolation = "Closest"
+        assert result.get("halo_shader_backface_mode") == "PAIRED_TEXTURE"
     assert result.surface_render_method == "DITHERED"
     assert result.use_backface_culling is cull
     return result
@@ -117,16 +132,40 @@ assert any(color[1] > color[0] * 1.5 and color[1] > 0.2 for color in samples), s
 
 # Explicit Ring inner/outer textures use coincident, oppositely wound surfaces.
 # From outside EEVEE backface culling must show only the red outer material;
-# the blue inner surface must not overlap it as it does in Cycles.
+# the blue inner surface must not overlap it.
 clear_objects()
 ring_data = ring_mesh("Cull Ring", (1.0, 1.0), segments=64, with_inner=True)
 ring = bpy.data.objects.new("Cull Ring", ring_data)
 scene.collection.objects.link(ring)
-assign_material(ring, material("Cull Ring Outer", image("Cull Ring Outer Image", (1.0, 0.0, 0.0, 1.0)), cull=True), 0)
-assign_material(ring, material("Cull Ring Inner", image("Cull Ring Inner Image", (0.0, 0.0, 1.0, 1.0)), cull=True), 1)
+outer_image = image("Cull Ring Outer Image", (1.0, 0.0, 0.0, 1.0))
+inner_image = image("Cull Ring Inner Image", (0.0, 0.0, 1.0, 1.0))
+assign_material(ring, material("Cull Ring Outer", outer_image, cull=True, backface=("Cull Ring Inner", inner_image)), 0)
+assign_material(ring, material("Cull Ring Inner", inner_image, cull=True, backface=("Cull Ring Outer", outer_image)), 1)
 camera_at((4.0, 0.0, 0.0), (-1.0, 0.0, 0.0), ortho_scale=3.0)
 rendered, width, height = render("eevee_ring_culling", 64, 64)
 outside = pixel(rendered, width, width // 2, height // 2)
 assert outside[0] > outside[2] * 2.0 and outside[0] > 0.2, outside
 
-print("EEVEE_RENDER_OK", {"transparent_samples": samples, "ring_outside": outside})
+# Cycles does not consume EEVEE's raster backface-culling switch.  Halo's
+# material graph therefore uses Geometry.Backfacing to choose the paired side
+# texture.  From outside only the red outer surface may remain; from the center
+# only the blue, oppositely-wound inner surface may remain.
+scene.render.engine = "CYCLES"
+scene.cycles.device = "CPU"
+scene.cycles.samples = 16
+scene.cycles.use_denoising = False
+rendered, width, height = render("cycles_ring_outside", 64, 64)
+cycles_outside = pixel(rendered, width, width // 2, height // 2)
+assert cycles_outside[0] > cycles_outside[2] * 2.0 and cycles_outside[0] > 0.2, cycles_outside
+
+camera_at((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), ortho_scale=1.4)
+rendered, width, height = render("cycles_ring_inside", 64, 64)
+cycles_inside = pixel(rendered, width, width // 2, height // 2)
+assert cycles_inside[2] > cycles_inside[0] * 2.0 and cycles_inside[2] > 0.2, cycles_inside
+
+print("RENDER_OK", {
+    "transparent_samples": samples,
+    "eevee_ring_outside": outside,
+    "cycles_ring_outside": cycles_outside,
+    "cycles_ring_inside": cycles_inside,
+})
