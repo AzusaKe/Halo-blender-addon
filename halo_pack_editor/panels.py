@@ -259,6 +259,32 @@ if bpy is not None:
                 layout.operator("halo.move_primitive", text="迁移到其他父级…", icon="CONSTRAINT_BONE")
 
 
+    class HALO_PT_mesh_conversion(Panel):
+        bl_idname = "HALO_PT_mesh_conversion"
+        bl_label = "Mesh 转子组"
+        bl_category = "Halo 光环"
+        bl_space_type = "VIEW_3D"
+        bl_region_type = "UI"
+
+        @classmethod
+        def poll(cls, context):
+            obj = context.active_object
+            return obj is not None and obj.get("halo_role") in {"definition_root", "group", "primitive"}
+
+        def draw(self, context):
+            layout = self.layout
+            obj = context.active_object
+            target = obj.parent if obj.get("halo_role") == "primitive" else obj
+            if target is not None and target.get("halo_role") == "definition_root":
+                target_name = "光环根（顶层）"
+            else:
+                target_node = getattr(target, "halo_node", None) if target is not None else None
+                target_name = str(getattr(target_node, "node_id", "") or getattr(target, "name", "无"))
+            layout.label(text=f"目标父级：{target_name}", icon="OUTLINER_OB_EMPTY")
+            layout.operator("halo.convert_mesh", text="导入 Mesh…", icon="MESH_DATA")
+            layout.label(text="从当前场景 Collection 选择普通网格")
+
+
     class HALO_PT_animation(Panel):
         bl_idname = "HALO_PT_animation"
         bl_label = "动画预览"
@@ -571,6 +597,7 @@ if bpy is not None:
         HALO_PT_project,
         HALO_PT_definition,
         HALO_PT_node,
+        HALO_PT_mesh_conversion,
         HALO_PT_tree,
         HALO_PT_animation,
         HALO_PT_text_animation,

@@ -295,6 +295,12 @@ def load_texture_image(texture_id: str, pack_root: str | os.PathLike[str] | None
 
     import bpy
 
+    # Generated Mesh-conversion textures may be packed in the .blend instead
+    # of being written into the imported source pack.  Resolve them by resource
+    # ID before consulting the source filesystem.
+    for image in bpy.data.images:
+        if image.get("halo_texture_id") == texture_id and not image.get("halo_missing_texture"):
+            return image
     path = resolve_texture_path(texture_id, pack_root)
     if path:
         for image in bpy.data.images:

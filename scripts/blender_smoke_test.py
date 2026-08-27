@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import zipfile
 from pathlib import Path
 
 import bpy
@@ -33,6 +34,153 @@ groups = [obj for obj in objects if obj.get("halo_role") == "group"]
 primitives = [obj for obj in objects if obj.get("halo_role") == "primitive"]
 assert len(groups) == 57, len(groups)
 assert len(primitives) == 29, len(primitives)
+
+# Convert one ordinary triangular Mesh into a wrapper group containing a flat
+# face group and a baked Billboard.  The transparent half of the minimum
+# covering rectangle must survive the PNG bake, and cleanup restores the Hina
+# tree before the remaining regression tests run.
+source_mesh = bpy.data.meshes.new("Mesh Conversion Triangle")
+source_mesh.from_pydata(
+    [
+        (0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (0.0, 1.0, 0.0),
+        (3.0, 0.0, 0.0), (3.0, 1.0, 0.0), (3.0, 1.0, 2.0), (3.0, 0.0, 2.0),
+    ],
+    [],
+    [(0, 1, 2), (3, 4, 5, 6)],
+)
+source_mesh.update()
+source_uv = source_mesh.uv_layers.new(name="UVMap")
+for loop, uv in zip(source_uv.data, (
+    (0.55, 0.55), (0.95, 0.55), (0.55, 0.95),
+    (0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0),
+)):
+    loop.uv = uv
+source_object = bpy.data.objects.new("Triangle Source Mesh", source_mesh)
+scene.collection.objects.link(source_object)
+source_object.location = (11.0, -4.0, 7.0)
+source_object.rotation_euler = (0.3, 0.5, -0.2)
+source_object.scale = (2.0, 3.0, 4.0)
+source_material = bpy.data.materials.new("Triangle Source Material")
+source_material.use_nodes = True
+source_shader = next(node for node in source_material.node_tree.nodes if node.bl_idname == "ShaderNodeBsdfPrincipled")
+source_atlas = bpy.data.images.new("Mesh Conversion Source Atlas", width=16, height=16, alpha=True)
+source_atlas_pixels = []
+for atlas_y in range(16):
+    for atlas_x in range(16):
+        # Only the upper-right atlas quadrant used by the triangle is green.
+        # If bake output UVs leak into material sampling, red pixels from the
+        # other three quadrants will appear in the converted face texture.
+        source_atlas_pixels.extend(
+            (0.05, 0.9, 0.1, 1.0) if atlas_x >= 8 and atlas_y >= 8 else (0.9, 0.05, 0.1, 1.0)
+        )
+source_atlas.pixels = source_atlas_pixels
+source_nodes = source_material.node_tree.nodes
+source_links = source_material.node_tree.links
+source_texcoord = source_nodes.new("ShaderNodeTexCoord")
+source_image_node = source_nodes.new("ShaderNodeTexImage")
+source_image_node.image = source_atlas
+source_image_node.interpolation = "Closest"
+source_links.new(source_texcoord.outputs["UV"], source_image_node.inputs["Vector"])
+source_links.new(source_image_node.outputs["Color"], source_shader.inputs["Base Color"])
+source_mesh.materials.append(source_material)
+source_material_blue = bpy.data.materials.new("Vertical Source Material")
+source_material_blue.use_nodes = True
+source_shader_blue = next(node for node in source_material_blue.node_tree.nodes if node.bl_idname == "ShaderNodeBsdfPrincipled")
+source_shader_blue.inputs["Base Color"].default_value = (0.1, 0.2, 0.9, 1.0)
+source_mesh.materials.append(source_material_blue)
+source_mesh.polygons[1].material_index = 1
+for selected in bpy.context.selected_objects:
+    selected.select_set(False)
+conversion_parent = groups[0]
+conversion_parent.select_set(True)
+bpy.context.view_layer.objects.active = conversion_parent
+assert bpy.ops.halo.convert_mesh(
+    source_object=source_object.name,
+    texture_resolution=32,
+    apply_modifiers=True,
+) == {"FINISHED"}
+converted_wrapper = bpy.context.active_object
+assert converted_wrapper.get("halo_role") == "group"
+assert converted_wrapper.parent == conversion_parent
+assert converted_wrapper.halo_node.node_id == source_object.name
+assert tuple(round(value, 6) for value in converted_wrapper.halo_node.position) == (0.0, 0.0, 0.0)
+converted_faces = [child for child in converted_wrapper.children if child.get("halo_role") == "group"]
+assert len(converted_faces) == 2
+converted_primitives = [child for face in converted_faces for child in face.children if child.get("halo_role") == "primitive"]
+assert len(converted_primitives) == 2
+horizontal_face = min(converted_faces, key=lambda face: abs(face.matrix_basis.translation.z))
+vertical_face = max(converted_faces, key=lambda face: face.matrix_basis.translation.x)
+converted_primitive = next(child for child in horizontal_face.children if child.get("halo_role") == "primitive")
+assert converted_primitive.halo_node.primitive_type == "billboard"
+assert sorted(round(value, 5) for value in converted_primitive.halo_node.size) == [1.0, 2.0]
+converted_corners = {
+    tuple(round(value, 5) for value in (horizontal_face.matrix_basis @ vertex.co))
+    for vertex in converted_primitive.data.vertices
+}
+assert converted_corners == {
+    (0.0, 0.0, 0.0),
+    (2.0, 0.0, 0.0),
+    (2.0, 1.0, 0.0),
+    (0.0, 1.0, 0.0),
+}, converted_corners
+converted_normal = (horizontal_face.matrix_basis.to_3x3() @ converted_primitive.data.polygons[0].normal).normalized()
+assert converted_normal.dot(Vector((0.0, 0.0, 1.0))) > 0.99999, converted_normal
+vertical_primitive = next(child for child in vertical_face.children if child.get("halo_role") == "primitive")
+vertical_normal = (vertical_face.matrix_basis.to_3x3() @ vertical_primitive.data.polygons[0].normal).normalized()
+assert vertical_normal.dot(Vector((1.0, 0.0, 0.0))) > 0.99999, vertical_normal
+converted_image = next(node.image for node in converted_primitive.data.materials[0].node_tree.nodes if node.bl_idname == "ShaderNodeTexImage")
+assert converted_image.get("halo_texture_id") == converted_primitive.halo_node.texture
+assert converted_image.get("halo_generated_texture") is True
+assert converted_image.packed_file is not None
+# Conversion is copy-on-write: the imported source pack remains untouched.
+assert resolve_texture_path(converted_primitive.halo_node.texture, scene.halo_project.pack_root) is None
+alpha_values = list(converted_image.pixels)[3::4]
+assert min(alpha_values) < 0.05 and max(alpha_values) > 0.95
+converted_pixels = list(converted_image.pixels)
+opaque_red = 0.0
+opaque_green = 0.0
+for pixel_offset in range(0, len(converted_pixels), 4):
+    if converted_pixels[pixel_offset + 3] > 0.9:
+        opaque_red += converted_pixels[pixel_offset]
+        opaque_green += converted_pixels[pixel_offset + 1]
+assert opaque_green > opaque_red * 4.0, (opaque_red, opaque_green)
+vertical_image = next(node.image for node in vertical_primitive.data.materials[0].node_tree.nodes if node.bl_idname == "ShaderNodeTexImage")
+vertical_pixels = list(vertical_image.pixels)
+center_offset = ((int(vertical_image.size[1]) // 2) * int(vertical_image.size[0]) + int(vertical_image.size[0]) // 2) * 4
+assert vertical_pixels[center_offset + 2] > vertical_pixels[center_offset] * 2.0
+conversion_zip = cache_root / "mesh-conversion-export.zip"
+blender_scene.export_pack_from_scene(scene, conversion_zip, zip_output=True, overwrite=True)
+namespace, relative_texture = converted_primitive.halo_node.texture.split(":", 1)
+with zipfile.ZipFile(conversion_zip, "r") as archive:
+    assert f"assets/{namespace}/{relative_texture}" in archive.namelist()
+conversion_zip.unlink()
+mesh_conversion_blend = cache_root / "mesh-conversion.blend"
+bpy.ops.wm.save_as_mainfile(filepath=str(mesh_conversion_blend))
+converted_objects = [converted_wrapper, *converted_faces, *converted_primitives]
+converted_meshes = [obj.data for obj in converted_objects if getattr(obj, "data", None) is not None]
+converted_materials = [material for mesh in converted_meshes for material in getattr(mesh, "materials", ()) if material]
+blender_scene.remove_object_tree(converted_wrapper)
+bpy.data.objects.remove(source_object, do_unlink=True)
+for mesh in converted_meshes:
+    if mesh.users == 0:
+        bpy.data.meshes.remove(mesh)
+for material in converted_materials:
+    if material.users == 0:
+        bpy.data.materials.remove(material)
+for image in (converted_image, vertical_image):
+    if image.users == 0:
+        bpy.data.images.remove(image)
+if source_mesh.users == 0:
+    bpy.data.meshes.remove(source_mesh)
+if source_material.users == 0:
+    bpy.data.materials.remove(source_material)
+if source_material_blue.users == 0:
+    bpy.data.materials.remove(source_material_blue)
+if source_atlas.users == 0:
+    bpy.data.images.remove(source_atlas)
+blender_scene.sync_definition_from_scene(scene, scene.halo_project.active_definition)
+conversion_parent.select_set(True)
+bpy.context.view_layer.objects.active = conversion_parent
 
 # Renaming an active definition is atomic: the UI lookup key, stable root,
 # complete object tree and both raw JSON copies change together.

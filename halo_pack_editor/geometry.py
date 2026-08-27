@@ -77,10 +77,22 @@ def blender_rotation_to_mc_euler(rotation) -> tuple[float, float, float]:
     matrix = rotation.to_matrix() if hasattr(rotation, "to_matrix") else rotation
     axis = _axis_matrix()
     mc_matrix = axis.transposed() @ matrix.to_3x3() @ axis
-    # ``Euler`` stores components in XYZ order even when its order is YXZ;
-    # JSON's Halo convention is explicitly [yaw(Y), pitch(X), roll(Z)].
-    euler = mc_matrix.to_euler("YXZ")
-    return (math.degrees(float(euler.y)), math.degrees(float(euler.x)), math.degrees(float(euler.z)))
+    # Invert the exact Java composition used by ``mc_rotation_matrix``:
+    # ``Ry(yaw) @ Rx(pitch) @ Rz(roll)``.  mathutils' generic ``to_euler``
+    # convention is not the inverse of that authored order for arbitrary
+    # orientations (vertical Mesh faces exposed the discrepancy).
+    sin_pitch = max(-1.0, min(1.0, -float(mc_matrix[1][2])))
+    pitch = math.asin(sin_pitch)
+    cos_pitch = math.cos(pitch)
+    if abs(cos_pitch) > 1.0e-7:
+        yaw = math.atan2(float(mc_matrix[0][2]), float(mc_matrix[2][2]))
+        roll = math.atan2(float(mc_matrix[1][0]), float(mc_matrix[1][1]))
+    else:
+        # At pitch ±90° yaw and roll are coupled.  Choose roll=0 and preserve
+        # the represented matrix through the remaining yaw degree of freedom.
+        yaw = math.atan2(-float(mc_matrix[2][0]), float(mc_matrix[0][0]))
+        roll = 0.0
+    return math.degrees(yaw), math.degrees(pitch), math.degrees(roll)
 
 
 def uniform_scale(value: Sequence[float] | Iterable[float], tolerance: float = 1e-5) -> tuple[float, bool]:

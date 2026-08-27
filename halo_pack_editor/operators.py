@@ -41,6 +41,7 @@ from .materials import (
     refresh_halo_material_settings,
     split_resource_id,
 )
+from .mesh_conversion import convert_mesh_to_halo
 from .properties import EASING_ITEMS, TRANSITION_DEFAULT_GROUP
 
 
@@ -73,6 +74,20 @@ def _select_object(context, obj):
 
 _REPARENT_TARGET_ITEMS: list[tuple[str, str, str]] = []
 _PRIMITIVE_MOVE_TARGET_ITEMS: list[tuple[str, str, str]] = []
+_MESH_SOURCE_ITEMS: list[tuple[str, str, str]] = []
+
+
+def _mesh_source_items(_self, context):
+    _MESH_SOURCE_ITEMS.clear()
+    if bpy is None or context is None or context.scene is None:
+        return _MESH_SOURCE_ITEMS
+    candidates = [obj for obj in context.scene.objects if obj.type == "MESH" and not obj.get("halo_role")]
+    for obj in sorted(candidates, key=lambda item: item.name.casefold()):
+        collections = ", ".join(collection.name for collection in obj.users_collection) or "场景"
+        _MESH_SOURCE_ITEMS.append((obj.name, obj.name, f"来自 Collection：{collections}"))
+    if not _MESH_SOURCE_ITEMS:
+        _MESH_SOURCE_ITEMS.append(("__NONE__", "没有可转换的 Mesh", "请先把普通网格对象加入当前场景"))
+    return _MESH_SOURCE_ITEMS
 
 
 def _group_display_name(obj) -> str:
@@ -817,6 +832,89 @@ if bpy is not None:
             glowing = bool(parent_node.glowing) if parent_node is not None else True
             obj = blender_scene._make_primitive(collection, parent, primitive, parent.get("halo_definition_id", ""), f"manual/primitive/{uuid.uuid4().hex[:8]}", glowing)
             _select_object(context, obj)
+            return {"FINISHED"}
+
+
+    class HALO_OT_convert_mesh(bpy.types.Operator):
+        bl_idname = "halo.convert_mesh"
+        bl_label = "导入 Mesh"
+        bl_description = "从当前 Blender 场景选择普通网格，把每个面烘焙并转换为目标父级下的 Halo 子组"
+        bl_options = {"REGISTER", "UNDO"}
+
+        source_object: EnumProperty(name="源网格", items=_mesh_source_items)
+        texture_resolution: IntProperty(
+            name="单面最长边分辨率",
+            description="每个面的烘焙贴图最长边像素数；另一边按最小覆盖矩形比例计算",
+            default=256,
+            min=16,
+            max=4096,
+        )
+        apply_modifiers: BoolProperty(
+            name="应用修改器结果",
+            description="使用可见修改器求值后的网格；对象自身的位置、旋转和缩放按约定不写入包装组",
+            default=True,
+        )
+        bake_mode: EnumProperty(
+            name="材质烘焙模式",
+            items=(
+                ("AUTO", "自动", "Principled 使用无光照基础色，Emission 使用发光通道，其余节点使用综合烘焙"),
+                ("DIFFUSE", "基础色", "只烘焙 Diffuse/Principled 基础色，不包含场景光照"),
+                ("EMIT", "发光", "烘焙材质的 Emission 输出"),
+                ("COMBINED", "综合", "烘焙完整材质和当前场景光照"),
+            ),
+            default="AUTO",
+        )
+
+        @classmethod
+        def poll(cls, context):
+            obj = _active_object(context)
+            return obj is not None and obj.get("halo_role") in {ROOT_ROLE, GROUP_ROLE, PRIMITIVE_ROLE}
+
+        def draw(self, _context):
+            layout = self.layout
+            layout.prop(self, "source_object")
+            layout.prop(self, "texture_resolution")
+            layout.prop(self, "apply_modifiers")
+            layout.prop(self, "bake_mode")
+            box = layout.box()
+            box.label(text="每个有效面 → 一个扁平子组 + Billboard", icon="MESH_PLANE")
+            box.label(text="使用源 Mesh 的局部坐标；忽略对象 G/R/S", icon="ORIENTATION_LOCAL")
+            box.label(text="非矩形区域以透明像素保留轮廓")
+
+        def invoke(self, context, _event):
+            items = _mesh_source_items(self, context)
+            if items:
+                self.source_object = items[0][0]
+            return context.window_manager.invoke_props_dialog(self, width=500)
+
+        def execute(self, context):
+            source = context.scene.objects.get(self.source_object) if self.source_object != "__NONE__" else None
+            if source is None or source.type != "MESH" or source.get("halo_role"):
+                self.report({"ERROR"}, "请选择当前场景中的普通 Mesh 对象")
+                return {"CANCELLED"}
+            parent = _active_object(context)
+            if parent is not None and parent.get("halo_role") == PRIMITIVE_ROLE:
+                parent = parent.parent
+            if parent is None or parent.get("halo_role") not in {ROOT_ROLE, GROUP_ROLE}:
+                self.report({"ERROR"}, "请选择光环根、部件组或其图元作为目标位置")
+                return {"CANCELLED"}
+            try:
+                result = convert_mesh_to_halo(
+                    context,
+                    source,
+                    parent,
+                    texture_resolution=self.texture_resolution,
+                    apply_modifiers=self.apply_modifiers,
+                    bake_mode=self.bake_mode,
+                )
+            except Exception as exc:
+                self.report({"ERROR"}, f"Mesh 转换失败：{exc}")
+                return {"CANCELLED"}
+            _select_object(context, result.wrapper)
+            if result.warnings:
+                self.report({"WARNING"}, f"已转换 {result.face_count} 个面；另有 {len(result.warnings)} 条警告")
+            else:
+                self.report({"INFO"}, f"已转换 {result.face_count} 个面并烘焙 {len(result.texture_ids)} 张贴图")
             return {"FINISHED"}
 
 
@@ -1988,6 +2086,7 @@ if bpy is not None:
         HALO_OT_export_zip,
         HALO_OT_add_group,
         HALO_OT_add_primitive,
+        HALO_OT_convert_mesh,
         HALO_OT_select_parent_group,
         HALO_OT_nudge_transform,
         HALO_OT_duplicate_node,

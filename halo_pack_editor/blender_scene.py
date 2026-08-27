@@ -915,6 +915,46 @@ def _definition_output_path(destination: Path, item, definition_id: str) -> Path
     return candidate
 
 
+def _write_generated_textures(destination: Path):
+    """Materialize packed Mesh-conversion images only in the export staging tree."""
+
+    from .materials import split_resource_id
+
+    referenced_ids: set[str] = set()
+    for obj in bpy.data.objects:
+        if obj.get("halo_role") != PRIMITIVE_ROLE:
+            continue
+        node = getattr(obj, "halo_node", None)
+        if node is None:
+            continue
+        if node.texture:
+            referenced_ids.add(str(node.texture))
+        if node.primitive_type == "ring" and node.inner_texture:
+            referenced_ids.add(str(node.inner_texture))
+    for image in bpy.data.images:
+        if not image.get("halo_generated_texture"):
+            continue
+        texture_id = str(image.get("halo_texture_id") or "")
+        if not texture_id or texture_id not in referenced_ids:
+            continue
+        namespace, relative = split_resource_id(texture_id)
+        target = (destination / "assets" / namespace / relative).resolve()
+        try:
+            target.relative_to(destination.resolve())
+        except ValueError:
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        old_path = image.filepath_raw
+        old_format = image.file_format
+        try:
+            image.filepath_raw = str(target)
+            image.file_format = "PNG"
+            image.save()
+        finally:
+            image.filepath_raw = old_path
+            image.file_format = old_format
+
+
 def export_pack_from_scene(scene, target_path: str | os.PathLike[str], zip_output: bool | None = None, overwrite: bool = False) -> str:
     """Export the current scene into a folder or ZIP using an atomic temp tree."""
 
@@ -947,6 +987,7 @@ def export_pack_from_scene(scene, target_path: str | os.PathLike[str], zip_outpu
     temporary = Path(tempfile.mkdtemp(prefix=".halo_pack_export_", dir=str(target.parent)))
     try:
         _copy_tree_to_temp(getattr(scene.halo_project, "pack_root", ""), str(temporary))
+        _write_generated_textures(temporary)
         manifest = _json_copy(DEFAULT_MANIFEST)
         try:
             parsed_manifest = json.loads(scene.halo_project.manifest_json or "{}")

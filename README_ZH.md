@@ -14,14 +14,13 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 - 在光环局部空间或标准 Minecraft 玩家头部空间中预览。
 - 从空白新建资源包、光环、组和图元，并导入或重链接 PNG 贴图。
 - 在当前父级复制组或图元；也可把图元迁移到目标父级下自动创建的属性副本组中。
-
-OBJ/通用网格烘焙转换不包含在 0.1.x 中。
+- 把当前 Blender 场景中的普通 Mesh 按面转换为 Halo 子组和 Billboard，并将各面的材质烘焙为独立透明 PNG。
 
 ## 安装
 
 1. 使用 Blender 5.2 LTS 或更新版本。
 2. 打开“编辑 → 偏好设置 → 扩展”，选择“从磁盘安装”。
-3. 选择 `halo_pack_editor-0.1.17.zip` 并启用扩展。
+3. 选择 `halo_pack_editor-0.2.1.zip` 并启用扩展。
 4. 在 3D 视图按 `N`，打开“Halo 光环”标签页。
 
 ## 基本工作流
@@ -42,7 +41,13 @@ OBJ/通用网格烘焙转换不包含在 0.1.x 中。
 7. 使用“动画预览”选择常驻、启动、关闭或完整序列，并播放 Blender 时间轴。
    - “动画预览”顶部会显示当前渲染器。点击“启用 EEVEE 一致性预览”可切换到 EEVEE，并把旧 `.blend` 中的 Halo 材质升级为“抖动”透明。该模式避免“混合”透明的对象排序遮挡，同时让带独立内外纹理的 Ring 通过背面剔除只显示正确朝向的表面。
    - 使用 Cycles 时，面板会显示“Cycles（单层双面）”。显式内外纹理 Ring 在 Blender 中只生成一层圆柱面，并按观察侧选择外侧或内侧贴图；JSON 与导出仍完整保留两个纹理字段。Halo 的发光只表现为自身全亮，不作为 Cycles 面光源照亮其他物体。旧 `.blend` 可点击“刷新 Cycles 材质”自动升级。
-8. 在“验证与导出”中先运行验证，再导出 ZIP 或文件夹。
+8. 要把普通 Mesh 转成 Halo 结构，先选中目标光环根、部件组或其图元，然后打开“Mesh 转子组”面板并点击“导入 Mesh…”：
+   - “源网格”会列出当前 Blender 场景 Collection 中的普通网格；Halo 自身的预览网格不会列入。
+   - 转换会在当前目标下建立一个以源网格命名、使用默认变换的包装组；每个有效面会成为它的扁平子组，并包含一个固定朝向的 Billboard。
+   - 源 Mesh 的局部坐标就是包装组的局部坐标。源对象自身的 G/R/S 不会写入 Halo；如需应用它们，请先在 Blender 中对源对象应用变换。
+   - 每个面的最小覆盖矩形决定 Billboard 的位置、旋转和尺寸；矩形外透明，可保留三角形及其他非矩形轮廓。修改器默认按当前可见结果求值。
+   - “自动”烘焙对 Principled 材质使用无场景光照的基础色、对直接 Emission 使用发光通道，对其他节点材质使用综合烘焙。生成贴图会打包进 `.blend`，只在导出资源包时写入 `assets/<namespace>/textures/halo/mesh_bakes/`，不会修改导入源包。
+9. 在“验证与导出”中先运行验证，再导出 ZIP 或文件夹。
 
 导入不会修改原资源包。导出默认拒绝覆盖已存在目标；需要覆盖时必须显式启用。
 
@@ -65,7 +70,7 @@ JSON 会统一输出为 UTF-8、两空格缩进；不保证原始空白逐字节
 ```powershell
 python -m unittest discover -s tests -p 'test_*.py' -v
 blender --command extension validate halo_pack_editor
-blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.1.17.zip
+blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.2.1.zip
 ```
 
 Blender 后台集成测试脚本位于 `scripts/`。测试与下载缓存应放在 `F:\codex-cache\halo-blender-addon`，扩展自身不会依赖该路径。

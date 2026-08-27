@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $extensionRoot = Join-Path $projectRoot 'halo_pack_editor'
 $distRoot = Join-Path $projectRoot 'dist'
-$packagePath = Join-Path $distRoot 'halo_pack_editor-0.1.17.zip'
+$packagePath = Join-Path $distRoot 'halo_pack_editor-0.2.1.zip'
 
 if (-not (Test-Path -LiteralPath $BlenderExe)) {
     throw "Blender 5.2 executable not found: $BlenderExe"
@@ -37,6 +37,13 @@ $blendFile = 'F:\codex-cache\halo-blender-addon\tests\hina-editor.blend'
 if ((Test-Path -LiteralPath $reopenTest) -and (Test-Path -LiteralPath $blendFile)) {
     & $BlenderExe --background $blendFile --python-exit-code 1 --python $reopenTest -- $projectRoot
     if ($LASTEXITCODE -ne 0) { throw 'Blender save/reopen test failed' }
+}
+
+$meshReopenTest = Join-Path $PSScriptRoot 'blender_mesh_reopen_test.py'
+$meshBlendFile = 'F:\codex-cache\halo-blender-addon\tests\mesh-conversion.blend'
+if ((Test-Path -LiteralPath $meshReopenTest) -and (Test-Path -LiteralPath $meshBlendFile)) {
+    & $BlenderExe --background $meshBlendFile --python-exit-code 1 --python $meshReopenTest -- $projectRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Blender Mesh conversion save/reopen test failed' }
 }
 
 $renderTest = Join-Path $PSScriptRoot 'blender_render_test.py'
