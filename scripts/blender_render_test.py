@@ -130,26 +130,25 @@ assert any(color[0] > color[1] * 1.5 and color[0] > 0.2 for color in samples), s
 assert any(color[1] > color[0] * 1.5 and color[1] > 0.2 for color in samples), samples
 
 
-# Explicit Ring inner/outer textures use coincident, oppositely wound surfaces.
-# From outside EEVEE backface culling must show only the red outer material;
-# the blue inner surface must not overlap it.
+# Explicit Ring inner/outer textures use one double-sided preview surface.
+# From outside the material must select red; from inside it must select blue.
 clear_objects()
-ring_data = ring_mesh("Cull Ring", (1.0, 1.0), segments=64, with_inner=True)
+ring_data = ring_mesh("Cull Ring", (1.0, 1.0), segments=64, with_inner=False)
 ring = bpy.data.objects.new("Cull Ring", ring_data)
 scene.collection.objects.link(ring)
 outer_image = image("Cull Ring Outer Image", (1.0, 0.0, 0.0, 1.0))
 inner_image = image("Cull Ring Inner Image", (0.0, 0.0, 1.0, 1.0))
-assign_material(ring, material("Cull Ring Outer", outer_image, cull=True, backface=("Cull Ring Inner", inner_image)), 0)
-assign_material(ring, material("Cull Ring Inner", inner_image, cull=True, backface=("Cull Ring Outer", outer_image)), 1)
+assign_material(ring, material("Cull Ring Outer", outer_image, backface=("Cull Ring Inner", inner_image)), 0)
+assert len(ring.data.polygons) == 64
+assert len(ring.data.materials) == 1
 camera_at((4.0, 0.0, 0.0), (-1.0, 0.0, 0.0), ortho_scale=3.0)
 rendered, width, height = render("eevee_ring_culling", 64, 64)
 outside = pixel(rendered, width, width // 2, height // 2)
 assert outside[0] > outside[2] * 2.0 and outside[0] > 0.2, outside
 
-# Cycles does not consume EEVEE's raster backface-culling switch.  Halo's
-# material graph therefore uses Geometry.Backfacing to choose the paired side
-# texture.  From outside only the red outer surface may remain; from the center
-# only the blue, oppositely-wound inner surface may remain.
+# Cycles uses the same Geometry.Backfacing side selection.  From outside only
+# the red outer texture may remain; from the center only the blue inner texture
+# may remain.
 scene.render.engine = "CYCLES"
 scene.cycles.device = "CPU"
 scene.cycles.samples = 16
@@ -163,9 +162,51 @@ rendered, width, height = render("cycles_ring_inside", 64, 64)
 cycles_inside = pixel(rendered, width, width // 2, height // 2)
 assert cycles_inside[2] > cycles_inside[0] * 2.0 and cycles_inside[2] > 0.2, cycles_inside
 
+# A Halo full-bright material must not behave as a Cycles area light.  Render a
+# white receiver with a very strong Halo emitter just outside the camera view,
+# then bypass the Light Path gate as a positive control for the same setup.
+clear_objects()
+receiver_mesh = billboard_mesh("Indirect Receiver", (2.0, 2.0))
+receiver = bpy.data.objects.new("Indirect Receiver", receiver_mesh)
+scene.collection.objects.link(receiver)
+receiver_material = bpy.data.materials.new("Indirect Receiver Material")
+receiver_material.use_nodes = True
+receiver_shader = next(node for node in receiver_material.node_tree.nodes if node.bl_idname == "ShaderNodeBsdfPrincipled")
+receiver_shader.inputs["Base Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+receiver_shader.inputs["Roughness"].default_value = 1.0
+assign_material(receiver, receiver_material)
+
+emitter_mesh = billboard_mesh("Halo Non-Light Emitter", (1.0, 1.0))
+emitter = bpy.data.objects.new("Halo Non-Light Emitter", emitter_mesh)
+scene.collection.objects.link(emitter)
+emitter.location = (1.45, 0.0, 0.5)
+emitter_material = material("Halo Non-Light Emitter", image("Halo Non-Light Image", (1.0, 0.1, 0.0, 1.0)))
+for node in emitter_material.node_tree.nodes:
+    if node.bl_idname == "ShaderNodeBsdfPrincipled":
+        node.inputs["Emission Strength"].default_value = 1000.0
+assign_material(emitter, emitter_material)
+camera_at((0.0, 0.0, 3.0), (0.0, 0.0, -1.0), ortho_scale=2.2)
+scene.cycles.samples = 64
+rendered, width, height = render("cycles_no_indirect_halo_light", 64, 64)
+no_light = pixel(rendered, width, width // 2, height // 2)
+assert max(no_light[:3]) < 0.03, no_light
+
+nodes = emitter_material.node_tree.nodes
+links = emitter_material.node_tree.links
+output = next(node for node in nodes if node.bl_idname == "ShaderNodeOutputMaterial")
+for link in list(output.inputs["Surface"].links):
+    links.remove(link)
+emitter_shader = next(node for node in nodes if node.bl_idname == "ShaderNodeBsdfPrincipled")
+links.new(emitter_shader.outputs["BSDF"], output.inputs["Surface"])
+rendered, width, height = render("cycles_indirect_light_control", 64, 64)
+light_control = pixel(rendered, width, width // 2, height // 2)
+assert max(light_control[:3]) > max(no_light[:3]) + 0.05, (no_light, light_control)
+
 print("RENDER_OK", {
     "transparent_samples": samples,
     "eevee_ring_outside": outside,
     "cycles_ring_outside": cycles_outside,
     "cycles_ring_inside": cycles_inside,
+    "cycles_no_indirect_light": no_light,
+    "cycles_indirect_control": light_control,
 })

@@ -15,4 +15,4 @@
 
 常驻动画提供通道级增删、编辑和排序。startup/shutdown 支持默认 `segments` 以及按组 ID 的 `id_overrides`（对象包装和直接数组两种写法）；图形界面可管理段的 `duration/easing`，以及 `offset/scale/alpha/rotation` 的 `from/to`、属性级 `duration/easing` 和 rotation `degrees`。`opacity` 旧别名可读取并原样编辑。startup 每个通道首次出现的段要求 `from`，shutdown 最后出现的段要求 `to`，与 Java 解析器的边界规则一致。完整 Text Editor JSON 入口继续保留；高级 JSON 往返保留未知键的语义和值，但会统一格式化为空格缩进。
 
-0.1.1 起，Billboard 与 Ring 导入时都会翻转纹理 V 轴，以匹配 Minecraft 与 Blender 不同的图像坐标约定。0.1.15 起，EEVEE 一致性预览采用“抖动”透明：避免“混合”模式只有对象级排序而导致透明像素遮挡后方图元。0.1.16 起，带独立内外纹理的 Ring 会在材质节点中按 `Backfacing` 选择观察侧贴图，不再依赖 Cycles 对材质背面剔除开关的支持；EEVEE 继续使用原生背面剔除，两种渲染器都保留完全共面的模组几何。旧版 `.blend` 材质会在加载或点击对应渲染器的“刷新材质”时升级。
+0.1.1 起，Billboard 与 Ring 导入时都会翻转纹理 V 轴，以匹配 Minecraft 与 Blender 不同的图像坐标约定。0.1.15 起，EEVEE 一致性预览采用“抖动”透明：避免“混合”模式只有对象级排序而导致透明像素遮挡后方图元。0.1.17 起，带独立内外纹理的 Ring 在 Blender 中使用单层双面几何，并在材质节点中按 `Backfacing` 选择观察侧贴图；JSON 与导出仍保留模组所需的 `outer_texture`/`inner_texture`。材质通过 `Light Path.Is Camera Ray` 隔离非摄像机射线，使 full-bright/glowing 预览不再产生 Cycles 间接照明、反射或阴影。旧版 `.blend` 的双层 Ring 会在加载或点击对应渲染器的“刷新材质”时自动升级。

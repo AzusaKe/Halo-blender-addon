@@ -91,6 +91,11 @@ _BACKFACE_NODE_NAMES = (
     "Halo Backface Principled",
     "Halo Backface Mix",
 )
+_VISIBILITY_NODE_NAMES = (
+    "Halo Visibility Light Path",
+    "Halo Visibility Transparent",
+    "Halo Visibility Mix",
+)
 
 
 def _configure_shader_backface_culling(
@@ -99,15 +104,13 @@ def _configure_shader_backface_culling(
     backface_image=None,
     pack_root: str | os.PathLike[str] | None = None,
 ):
-    """Mirror Ring side selection inside the shader for Cycles.
+    """Build deterministic two-sided Ring shading for EEVEE and Cycles.
 
-    EEVEE honors ``use_backface_culling`` directly.  Cycles does not use that
-    rasterization switch consistently.  Ring inner/outer surfaces are exactly
-    coincident, so transparency alone can skip both near surfaces because of
-    ray epsilon.  When the paired texture is known, both coincident faces emit
-    the correct observer-facing texture; whichever face Cycles intersects is
-    therefore deterministic.  A transparent fallback remains for unpaired
-    one-sided materials.
+    A Ring with an explicit inner texture is represented by one double-sided
+    cylinder in Blender.  ``Geometry.Backfacing`` selects the inner texture on
+    the back side, avoiding coincident geometry entirely.  A Light Path gate
+    keeps the full-bright preview visible to camera rays without turning Halo
+    sprites into Cycles light sources or shadow casters.
     """
 
     if not material.use_nodes or material.node_tree is None:
@@ -136,7 +139,7 @@ def _configure_shader_backface_culling(
         if backface_image is None:
             backface_image = load_texture_image(stored_backface_id, pack_root)
 
-    for node_name in _BACKFACE_NODE_NAMES:
+    for node_name in (*_BACKFACE_NODE_NAMES, *_VISIBILITY_NODE_NAMES):
         existing = nodes.get(node_name)
         if existing is not None:
             nodes.remove(existing)
@@ -146,24 +149,22 @@ def _configure_shader_backface_culling(
     for link in list(surface.links):
         links.remove(link)
 
-    if not material.use_backface_culling:
-        links.new(shader.outputs["BSDF"], surface)
-        material["halo_shader_backface_culling"] = False
-        return True
+    paired_texture = bool(stored_backface_id and backface_image is not None)
+    visible_shader = shader.outputs["BSDF"]
+    if paired_texture or material.use_backface_culling:
+        geometry = nodes.new("ShaderNodeNewGeometry")
+        geometry.name = "Halo Backface Geometry"
+        geometry.label = "内外面检测"
+        geometry.location = (120, -260)
+        mix = nodes.new("ShaderNodeMixShader")
+        mix.name = "Halo Backface Mix"
+        mix.label = "Halo 内外面着色"
+        mix.location = (390, 20)
+        links.new(geometry.outputs["Backfacing"], mix.inputs[0])
+        links.new(shader.outputs["BSDF"], mix.inputs[1])
+        visible_shader = mix.outputs["Shader"]
 
-    geometry = nodes.new("ShaderNodeNewGeometry")
-    geometry.name = _BACKFACE_NODE_NAMES[0]
-    geometry.label = "背面检测（Cycles）"
-    geometry.location = (120, -260)
-    mix = nodes.new("ShaderNodeMixShader")
-    mix.name = "Halo Backface Mix"
-    mix.label = "Halo 内外面着色"
-    mix.location = (390, 20)
-    output.location = (650, 20)
-    links.new(geometry.outputs["Backfacing"], mix.inputs[0])
-    links.new(shader.outputs["BSDF"], mix.inputs[1])
-
-    if stored_backface_id and backface_image is not None:
+    if paired_texture:
         texture = nodes.new("ShaderNodeTexImage")
         texture.name = "Halo Backface Texture"
         texture.label = "Cycles 对侧纹理"
@@ -193,15 +194,39 @@ def _configure_shader_backface_culling(
         links.new(back_shader.outputs["BSDF"], mix.inputs[2])
         material["halo_backface_texture_id"] = stored_backface_id
         material["halo_shader_backface_mode"] = "PAIRED_TEXTURE"
-    else:
+    elif material.use_backface_culling:
         transparent = nodes.new("ShaderNodeBsdfTransparent")
         transparent.name = "Halo Backface Transparent"
         transparent.label = "背面透明"
         transparent.location = (350, -180)
         links.new(transparent.outputs["BSDF"], mix.inputs[2])
         material["halo_shader_backface_mode"] = "TRANSPARENT"
-    links.new(mix.outputs["Shader"], surface)
-    material["halo_shader_backface_culling"] = True
+    else:
+        material["halo_shader_backface_mode"] = "DOUBLE_SIDED"
+
+    # Minecraft's glowing/full-bright appearance is visible coloration, not an
+    # emissive area light.  Hide the shader from non-camera Cycles paths so the
+    # preview does not cast colored indirect light, reflections, or shadows.
+    light_path = nodes.new("ShaderNodeLightPath")
+    light_path.name = "Halo Visibility Light Path"
+    light_path.label = "仅摄像机可见"
+    light_path.location = (390, -260)
+    ray_transparent = nodes.new("ShaderNodeBsdfTransparent")
+    ray_transparent.name = "Halo Visibility Transparent"
+    ray_transparent.label = "非摄像机射线透明"
+    ray_transparent.location = (610, -180)
+    visibility_mix = nodes.new("ShaderNodeMixShader")
+    visibility_mix.name = "Halo Visibility Mix"
+    visibility_mix.label = "阻止间接发光"
+    visibility_mix.location = (650, 20)
+    output.location = (900, 20)
+    links.new(light_path.outputs["Is Camera Ray"], visibility_mix.inputs[0])
+    links.new(ray_transparent.outputs["BSDF"], visibility_mix.inputs[1])
+    links.new(visible_shader, visibility_mix.inputs[2])
+    links.new(visibility_mix.outputs["Shader"], surface)
+    material["halo_shader_backface_culling"] = bool(material.use_backface_culling)
+    material["halo_shader_side_selection"] = paired_texture
+    material["halo_camera_only_shader"] = True
     return True
 
 
@@ -218,30 +243,29 @@ def refresh_halo_material_settings():
         _configure_shader_backface_culling(material)
         refreshed += 1
 
-    # Materials created before 0.1.16 do not record their paired Ring texture.
-    # Recover it from two-slot Ring objects so saved projects gain deterministic
-    # Cycles side selection without being re-imported.
+    # Collapse 0.1.16 and older two-surface Ring previews to one double-sided
+    # surface.  JSON still retains ``inner_texture``; only Blender's preview
+    # representation changes.
     for obj in bpy.data.objects:
-        slots = getattr(getattr(obj, "data", None), "materials", None)
-        if slots is None or len(slots) < 2:
+        if obj.get("halo_role") != "primitive":
             continue
-        outer, inner = slots[0], slots[1]
-        if not outer or not inner or not outer.use_backface_culling or not inner.use_backface_culling:
+        node = getattr(obj, "halo_node", None)
+        if node is None or node.primitive_type != "ring" or not node.inner_texture:
             continue
-        outer_id = str(outer.get("halo_texture_id") or "")
-        inner_id = str(inner.get("halo_texture_id") or "")
-        if not outer_id or not inner_id:
+        mesh = getattr(obj, "data", None)
+        if mesh is not None and len(mesh.polygons) == int(node.segments) and len(mesh.materials) == 1:
             continue
-        outer_image = next(
-            (node.image for node in outer.node_tree.nodes if node.bl_idname == "ShaderNodeTexImage" and node.name != "Halo Backface Texture"),
-            None,
-        )
-        inner_image = next(
-            (node.image for node in inner.node_tree.nodes if node.bl_idname == "ShaderNodeTexImage" and node.name != "Halo Backface Texture"),
-            None,
-        )
-        _configure_shader_backface_culling(outer, inner_id, inner_image)
-        _configure_shader_backface_culling(inner, outer_id, outer_image)
+        from .geometry import ring_mesh
+
+        old_mesh = obj.data
+        obj.data = ring_mesh(obj.name, node.size, node.segments, False)
+        project = getattr(getattr(bpy.context, "scene", None), "halo_project", None)
+        pack_root = getattr(project, "pack_root", "") if project is not None else ""
+        group_node = getattr(getattr(obj, "parent", None), "halo_node", None)
+        glowing = bool(group_node.glowing) if group_node is not None else True
+        assign_primitive_materials(obj, node.texture, node.inner_texture, pack_root, glowing=glowing)
+        if old_mesh and old_mesh.users == 0:
+            bpy.data.meshes.remove(old_mesh)
     return refreshed
 
 
@@ -383,19 +407,10 @@ def assign_primitive_materials(
         texture_id,
         pack_root,
         glowing=glowing,
-        backface_culling=bool(inner_texture_id),
+        backface_culling=False,
         backface_texture_id=inner_texture_id,
     )
     assign_material(obj, outer, 0)
-    if inner_texture_id:
-        inner = create_halo_material(
-            inner_texture_id,
-            pack_root,
-            glowing=glowing,
-            backface_culling=True,
-            backface_texture_id=texture_id,
-        )
-        assign_material(obj, inner, 1)
     return outer
 
 

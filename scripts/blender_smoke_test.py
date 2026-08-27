@@ -18,8 +18,8 @@ sys.path.insert(0, str(project_root))
 import halo_pack_editor
 from halo_pack_editor import blender_scene, handlers, operators, panels
 from halo_pack_editor.core.pack_io import import_pack
-from halo_pack_editor.geometry import mc_rotation_quaternion, mc_to_blender
-from halo_pack_editor.materials import resolve_texture_path
+from halo_pack_editor.geometry import mc_rotation_quaternion, mc_to_blender, ring_mesh
+from halo_pack_editor.materials import assign_material, create_halo_material, resolve_texture_path
 
 
 halo_pack_editor.register()
@@ -322,9 +322,9 @@ for primitive in primitives:
         actual_uv = [tuple(round(value, 5) for value in loop.uv) for loop in primitive.data.uv_layers[0].data]
         assert actual_uv == [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)], actual_uv
     elif kind == "ring":
-        expected_surfaces = 2 if primitive.halo_node.inner_texture else 1
-        assert len(primitive.data.polygons) == primitive.halo_node.segments * expected_surfaces
-        assert primitive.data.materials[0].use_backface_culling == bool(primitive.halo_node.inner_texture)
+        assert len(primitive.data.polygons) == primitive.halo_node.segments
+        assert len(primitive.data.materials) == 1
+        assert not primitive.data.materials[0].use_backface_culling
         outer_uv = [tuple(round(value, 5) for value in loop.uv) for loop in primitive.data.uv_layers[0].data[:4]]
         assert outer_uv[0] == (0.0, 1.0) and outer_uv[3] == (0.0, 0.0), outer_uv
     material = primitive.data.materials[0]
@@ -333,47 +333,36 @@ for primitive in primitives:
     assert not material.use_transparency_overlap
     assert not material.show_transparent_back
     assert any(node.name == "Halo Preview Alpha" for node in material.node_tree.nodes)
-    shader_culling = bool(material.get("halo_shader_backface_culling"))
-    assert shader_culling == material.use_backface_culling
-    assert bool(material.node_tree.nodes.get("Halo Backface Mix")) == material.use_backface_culling
+    paired_sides = bool(primitive.halo_node.inner_texture)
+    assert bool(material.get("halo_shader_side_selection")) == paired_sides
+    assert bool(material.node_tree.nodes.get("Halo Backface Mix")) == paired_sides
+    assert material.node_tree.nodes.get("Halo Visibility Light Path") is not None
+    assert material.node_tree.nodes.get("Halo Visibility Mix") is not None
+    assert material.get("halo_camera_only_shader") is True
 
 legacy_material = primitives[0].data.materials[0]
 legacy_material.surface_render_method = "BLENDED"
 
-# Simulate a culled Ring material saved by 0.1.15: it has the EEVEE culling
-# flag but no shader-level fallback.  Refresh must upgrade it for Cycles.
-legacy_culled = next(
-    material
-    for primitive in primitives
-    for material in primitive.data.materials
-    if material and material.use_backface_culling
-)
-legacy_nodes = legacy_culled.node_tree.nodes
-legacy_links = legacy_culled.node_tree.links
-for node_name in (
-    "Halo Backface Geometry",
-    "Halo Backface Transparent",
-    "Halo Backface Texture",
-    "Halo Backface Preview Alpha",
-    "Halo Backface Principled",
-    "Halo Backface Mix",
-):
-    node = legacy_nodes.get(node_name)
-    if node is not None:
-        legacy_nodes.remove(node)
-for property_name in ("halo_backface_texture_id", "halo_shader_backface_mode"):
-    if property_name in legacy_culled:
-        del legacy_culled[property_name]
-legacy_output = next(node for node in legacy_nodes if node.bl_idname == "ShaderNodeOutputMaterial")
-legacy_shader = next(node for node in legacy_nodes if node.bl_idname == "ShaderNodeBsdfPrincipled")
-legacy_links.new(legacy_shader.outputs["BSDF"], legacy_output.inputs["Surface"])
-legacy_culled["halo_shader_backface_culling"] = False
+# Simulate an explicit-inner Ring saved by 0.1.15: two coincident surfaces and
+# two culled material slots.  Refresh must collapse it to the 0.1.17 one-surface
+# representation while retaining both JSON texture identifiers.
+legacy_ring = next(item for item in primitives if item.halo_node.primitive_type == "ring" and item.halo_node.inner_texture)
+old_mesh = legacy_ring.data
+legacy_ring.data = ring_mesh(legacy_ring.name + " Legacy", legacy_ring.halo_node.size, legacy_ring.halo_node.segments, True)
+if old_mesh.users == 0:
+    bpy.data.meshes.remove(old_mesh)
+legacy_outer = create_halo_material(legacy_ring.halo_node.texture, scene.halo_project.pack_root, backface_culling=True, name="Legacy Outer")
+legacy_inner = create_halo_material(legacy_ring.halo_node.inner_texture, scene.halo_project.pack_root, backface_culling=True, name="Legacy Inner")
+assign_material(legacy_ring, legacy_outer, 0)
+assign_material(legacy_ring, legacy_inner, 1)
+assert len(legacy_ring.data.polygons) == legacy_ring.halo_node.segments * 2
+assert len(legacy_ring.data.materials) == 2
 assert bpy.ops.halo.configure_eevee_preview() == {"FINISHED"}
 assert scene.render.engine == "BLENDER_EEVEE"
 assert legacy_material.surface_render_method == "DITHERED"
-assert legacy_culled.get("halo_shader_backface_culling") is True
-assert legacy_culled.node_tree.nodes.get("Halo Backface Mix") is not None
-assert legacy_culled.get("halo_shader_backface_mode") == "PAIRED_TEXTURE"
+assert len(legacy_ring.data.polygons) == legacy_ring.halo_node.segments
+assert len(legacy_ring.data.materials) == 1
+assert legacy_ring.data.materials[0].get("halo_shader_backface_mode") == "PAIRED_TEXTURE"
 
 # Ring outer/inner textures have separate file-picker targets.  Clearing the
 # inner texture returns to one double-sided surface; importing an inner PNG
@@ -392,10 +381,10 @@ assert len(ring.data.materials) == 1
 assert len(ring.data.polygons) == ring.halo_node.segments
 assert bpy.ops.halo.import_texture(filepath=alternate_path, target="INNER") == {"FINISHED"}
 assert ring.halo_node.inner_texture
-assert len(ring.data.materials) == 2
-assert ring.data.materials[1].get("halo_texture_id") == ring.halo_node.inner_texture
-assert len(ring.data.polygons) == ring.halo_node.segments * 2
-assert any(polygon.material_index == 1 for polygon in ring.data.polygons)
+assert len(ring.data.materials) == 1
+assert ring.data.materials[0].get("halo_backface_texture_id") == ring.halo_node.inner_texture
+assert len(ring.data.polygons) == ring.halo_node.segments
+assert ring.data.materials[0].get("halo_shader_backface_mode") == "PAIRED_TEXTURE"
 
 # Typed MC transform -> Blender object -> exported JSON.
 group = groups[0]

@@ -1,15 +1,15 @@
-# Halo Pack Editor 0.1.16 测试报告
+# Halo Pack Editor 0.1.17 测试报告
 
 测试日期：2026-08-27
 宿主：Blender 5.2.0 LTS（`fbe6228777e7`）  
-交付包：`dist/halo_pack_editor-0.1.16.zip`
-SHA-256：`EDC8CE30F23B3620B6676345F75FE278982604E5B1BA160888F28EEE187EC388`
+交付包：`dist/halo_pack_editor-0.1.17.zip`
+SHA-256：`C2A6FD7C502D2FA450A31930BFAA677B374BAC2138BC448A1BEE27D94FDCBE11`
 
 ## 自动化结果
 
 - 纯 Python：17 项测试全部通过。覆盖未知 JSON 字段与旧式写法保留、ZIP 安全、原子导出、资源路径与 PNG/labPBR、坐标矩阵、YXZ 旋转、动画函数、继承、过渡补值/反演/缓动和 `degrees` 行程。
 - Blender Extension：源码 manifest 校验、ZIP 构建、构建包校验均通过。
-- 全新安装：在 `F:\codex-cache\halo-blender-addon\isolated-0.1.16-20260827` 隔离用户目录中执行 `extension install-file --enable`，确认扩展可加载、Cycles 可启用，并可执行 EEVEE/Cycles 材质刷新操作器。
+- 全新安装：在 `F:\codex-cache\halo-blender-addon\isolated-0.1.17-20260827` 隔离用户目录中执行 `extension install-file --enable`，确认扩展可加载、Cycles 可启用，并可执行材质刷新操作器。
 - Hina：导入 57 个组、29 个图元、至少四层结构；检查 Billboard 法线/UV、Ring 表面数与剔除、材质 Alpha 乘法节点；场景同步、ZIP 往返、原子文件夹往返、保存 `.blend` 与重新打开均通过。
 - Shiroko：startup 与 `id_overrides` 在 Blender 时间轴求值无错误，`degrees` 字段由核心求值器验收；从真实常驻动画通道读取既有项，并通过逐行操作器完成新增、编辑、排序与删除测试。
 - 动画 JSON 编辑：成功把 startup 打开为 Blender Text 数据块，在多行 Text Editor 中修改并通过侧栏操作器重新解析、应用；无效 JSON 会阻止应用并报告错误。
@@ -36,6 +36,7 @@ SHA-256：`EDC8CE30F23B3620B6676345F75FE278982604E5B1BA160888F28EEE187EC388`
 - 0.1.14 移动属性选择：组重设父级和图元迁移的属性选项默认全部启用；另以选择性测试取消位置、缩放、常驻动画、发光/继承和扩展字段，仅保留旋转，确认未选字段重置为 schema 默认值且原局部旋转精确保留。图元迁移另覆盖全部取消，确认新包装组使用单位变换、空动画、默认渲染/继承、删除未知字段且不复制 startup `id_overrides`。
 - 0.1.15 EEVEE 一致性预览：修复 Blender 5.2 中旧 `blend_method=BLEND` 覆盖 `surface_render_method=DITHERED` 的问题；断言新建和旧场景升级后的全部 Halo 材质均保持抖动透明。新增真实离屏渲染测试：两个同原点图元前后重叠时，前图透明半幅正确显示绿色后图而非世界背景；显式内外纹理 Ring 从外部观察只显示红色外表面，蓝色共面内表面被背面剔除。
 - 0.1.16 Cycles 一致性预览：显式内外纹理 Ring 保持完全共面几何，在材质节点中按 `Geometry.Backfacing` 选择观察侧贴图；真实 Cycles 离屏渲染断言从圆环外部只显示红色外纹理、从圆环内部只显示蓝色内纹理。旧 0.1.15 材质可从对象的双材质槽恢复配对关系并自动升级，同时 EEVEE 透明与外侧剔除回归继续通过。
+- 0.1.17 Cycles 共面与发光修复：显式内外纹理 Ring 的 Blender 预览改为单层圆柱面、单材质槽，通过 `Geometry.Backfacing` 选择两张纹理；JSON 和导出仍保留两个资源 ID。真实 EEVEE/Cycles 渲染分别验证外视红色、内视蓝色。使用强度 1000 的 Halo 发光面和白色接收面验证 `Light Path.Is Camera Ray`：正常材质接收面保持全黑，绕过隔离节点的阳性对照达到明显照明，确认 Halo 不再产生间接发光。旧版双层 Ring 刷新后自动折叠为单层。
 
 ## 人工验收边界
 

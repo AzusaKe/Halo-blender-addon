@@ -509,7 +509,7 @@ def _set_node_mesh(obj):
         return False
     old_mesh = obj.data
     if node.primitive_type == "ring":
-        obj.data = ring_mesh(obj.name, node.size, node.segments, bool(node.inner_texture))
+        obj.data = ring_mesh(obj.name, node.size, node.segments, False)
     else:
         obj.data = billboard_mesh(obj.name, node.size)
     if old_mesh and old_mesh.users == 0:
@@ -1330,7 +1330,7 @@ if bpy is not None:
     class HALO_OT_refresh_render_materials(bpy.types.Operator):
         bl_idname = "halo.refresh_render_materials"
         bl_label = "刷新 Halo 渲染材质"
-        bl_description = "升级全部 Halo 材质；在 Cycles 中通过着色器背面检测复现 Ring 单面剔除"
+        bl_description = "升级全部 Halo 材质；显式内外纹理 Ring 使用单层双面预览，并阻止 Cycles 间接发光"
         bl_options = {"REGISTER", "UNDO"}
 
         def execute(self, context):

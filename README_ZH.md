@@ -7,7 +7,7 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 - 导入或导出资源包 ZIP、解包目录，以及包含多个命名空间和光环的整包。
 - 使用 Blender Outliner 编辑与模组一致的组/图元父子树。
 - 精确生成 billboard 与带内外表面的 ring，解析 Minecraft 资源路径和 PNG 透明材质。
-- 提供 EEVEE 与 Cycles 一致性预览：抖动透明避免透明像素遮挡后方图元；节点级内外面选择让 Ring 的共面内外纹理在两种渲染器中均正确显示。
+- 提供 EEVEE 与 Cycles 一致性预览：抖动透明避免透明像素遮挡后方图元；显式内外纹理 Ring 使用单层双面预览，消除共面冲突和 Cycles 间接发光。
 - 编辑位置、YXZ 旋转、统一缩放、发光与 alpha/glow 继承等定义属性。
 - 编辑 `damping` 跟踪参数与角动量开关；当前仅做字段编辑和无损导入导出，不模拟阻尼运动。
 - 编辑并预览 `sin`、`cos`、`linear` 常驻动画和 startup/shutdown 过渡动画。
@@ -21,7 +21,7 @@ OBJ/通用网格烘焙转换不包含在 0.1.x 中。
 
 1. 使用 Blender 5.2 LTS 或更新版本。
 2. 打开“编辑 → 偏好设置 → 扩展”，选择“从磁盘安装”。
-3. 选择 `halo_pack_editor-0.1.16.zip` 并启用扩展。
+3. 选择 `halo_pack_editor-0.1.17.zip` 并启用扩展。
 4. 在 3D 视图按 `N`，打开“Halo 光环”标签页。
 
 ## 基本工作流
@@ -41,7 +41,7 @@ OBJ/通用网格烘焙转换不包含在 0.1.x 中。
 6. startup/shutdown 在“过渡动画”面板中图形化编辑：先选择启动/关闭和组 ID，再添加、排序或删除段；每段可设置时间、缓动，并添加 `offset`、`scale`、`alpha`、`rotation` 通道。通道支持 `from`/`to`、独立时间、独立缓动以及 rotation `degrees`。完整 JSON 入口继续用于高级字段与故障修复。
 7. 使用“动画预览”选择常驻、启动、关闭或完整序列，并播放 Blender 时间轴。
    - “动画预览”顶部会显示当前渲染器。点击“启用 EEVEE 一致性预览”可切换到 EEVEE，并把旧 `.blend` 中的 Halo 材质升级为“抖动”透明。该模式避免“混合”透明的对象排序遮挡，同时让带独立内外纹理的 Ring 通过背面剔除只显示正确朝向的表面。
-   - 使用 Cycles 时，面板会显示“Cycles（节点面剔除）”。扩展不依赖 Cycles 的材质剔除开关，而是按着色点朝向选择 Ring 的外侧或内侧贴图；旧 `.blend` 可点击“刷新 Cycles 材质”自动升级。
+   - 使用 Cycles 时，面板会显示“Cycles（单层双面）”。显式内外纹理 Ring 在 Blender 中只生成一层圆柱面，并按观察侧选择外侧或内侧贴图；JSON 与导出仍完整保留两个纹理字段。Halo 的发光只表现为自身全亮，不作为 Cycles 面光源照亮其他物体。旧 `.blend` 可点击“刷新 Cycles 材质”自动升级。
 8. 在“验证与导出”中先运行验证，再导出 ZIP 或文件夹。
 
 导入不会修改原资源包。导出默认拒绝覆盖已存在目标；需要覆盖时必须显式启用。
@@ -65,7 +65,7 @@ JSON 会统一输出为 UTF-8、两空格缩进；不保证原始空白逐字节
 ```powershell
 python -m unittest discover -s tests -p 'test_*.py' -v
 blender --command extension validate halo_pack_editor
-blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.1.16.zip
+blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.1.17.zip
 ```
 
 Blender 后台集成测试脚本位于 `scripts/`。测试与下载缓存应放在 `F:\codex-cache\halo-blender-addon`，扩展自身不会依赖该路径。

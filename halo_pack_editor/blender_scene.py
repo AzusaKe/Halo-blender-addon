@@ -429,10 +429,10 @@ def _make_primitive(collection, group_obj, primitive: Mapping[str, Any], definit
     size = _vec(primitive.get("size"), 2, (1.0, 1.0))
     obj_name = f"{group_obj.name} · {primitive_type}"
     if primitive_type == "ring":
-        # Java draws one double-sided surface for a single texture, or two
-        # same-radius culled surfaces when an explicit inner texture exists.
-        has_inner = bool(primitive.get("inner_texture"))
-        mesh = ring_mesh(obj_name, size, int(primitive.get("segments", 32) or 32), has_inner)
+        # Blender uses one double-sided surface for both variants.  When an
+        # explicit inner texture exists, the material selects it on backfaces;
+        # this avoids Cycles ambiguity from the mod's coincident two surfaces.
+        mesh = ring_mesh(obj_name, size, int(primitive.get("segments", 32) or 32), False)
         texture = str(primitive.get("outer_texture", primitive.get("texture", "")))
         inner_texture = str(primitive.get("inner_texture", ""))
     else:
