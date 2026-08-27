@@ -20,7 +20,7 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 
 1. 使用 Blender 5.2 LTS 或更新版本。
 2. 打开“编辑 → 偏好设置 → 扩展”，选择“从磁盘安装”。
-3. 选择 `halo_pack_editor-0.2.1.zip` 并启用扩展。
+3. 选择 `halo_pack_editor-0.2.2.zip` 并启用扩展。
 4. 在 3D 视图按 `N`，打开“Halo 光环”标签页。
 
 ## 基本工作流
@@ -47,6 +47,7 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
    - 源 Mesh 的局部坐标就是包装组的局部坐标。源对象自身的 G/R/S 不会写入 Halo；如需应用它们，请先在 Blender 中对源对象应用变换。
    - 每个面的最小覆盖矩形决定 Billboard 的位置、旋转和尺寸；矩形外透明，可保留三角形及其他非矩形轮廓。修改器默认按当前可见结果求值。
    - “自动”烘焙对 Principled 材质使用无场景光照的基础色、对直接 Emission 使用发光通道，对其他节点材质使用综合烘焙。生成贴图会打包进 `.blend`，只在导出资源包时写入 `assets/<namespace>/textures/halo/mesh_bakes/`，不会修改导入源包。
+   - “边缘扩张圈数”控制在面轮廓外增加多少圈像素，范围 0–64、默认 2。新增像素逐圈精确复制相邻采样点的 RGBA，不做平均或颜色插值；原面内部已采样像素始终保持不变。
 9. 在“验证与导出”中先运行验证，再导出 ZIP 或文件夹。
 
 导入不会修改原资源包。导出默认拒绝覆盖已存在目标；需要覆盖时必须显式启用。
@@ -70,7 +71,7 @@ JSON 会统一输出为 UTF-8、两空格缩进；不保证原始空白逐字节
 ```powershell
 python -m unittest discover -s tests -p 'test_*.py' -v
 blender --command extension validate halo_pack_editor
-blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.2.1.zip
+blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.2.2.zip
 ```
 
 Blender 后台集成测试脚本位于 `scripts/`。测试与下载缓存应放在 `F:\codex-cache\halo-blender-addon`，扩展自身不会依赖该路径。

@@ -175,25 +175,50 @@ def _opaque_polygon_mask(width: int, height: int, polygon_uvs: list[tuple[float,
     return mask
 
 
-def _dilate_transparent_rgb(pixels: list[float], width: int, height: int):
-    """Copy neighboring edge colors under fully transparent pixels."""
+def _expand_polygon_border(
+    pixels: list[float],
+    polygon_mask: list[float],
+    width: int,
+    height: int,
+    rings: int,
+):
+    """Expand a polygon by exact RGBA copies without averaging edge colors."""
 
-    original = pixels[:]
-    for y in range(height):
-        for x in range(width):
-            offset = (y * width + x) * 4
-            if original[offset + 3] > 1.0e-6:
-                continue
-            colors = []
-            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                nx, ny = x + dx, y + dy
-                if 0 <= nx < width and 0 <= ny < height:
-                    neighbor = (ny * width + nx) * 4
-                    if original[neighbor + 3] > 1.0e-6:
-                        colors.append(original[neighbor:neighbor + 3])
-            if colors:
-                for channel in range(3):
-                    pixels[offset + channel] = sum(color[channel] for color in colors) / len(colors)
+    covered = [value > 0.5 for value in polygon_mask]
+    neighbors = (
+        (-1, -1), (0, -1), (1, -1),
+        (-1, 0),            (1, 0),
+        (-1, 1),  (0, 1),  (1, 1),
+    )
+    for _ring in range(max(0, int(rings))):
+        previous_pixels = pixels[:]
+        previous_covered = covered[:]
+        additions: list[tuple[int, int]] = []
+        for y in range(height):
+            for x in range(width):
+                index = y * width + x
+                if previous_covered[index]:
+                    continue
+                source_index = None
+                for dx, dy in neighbors:
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < width and 0 <= ny < height:
+                        neighbor_index = ny * width + nx
+                        if previous_covered[neighbor_index]:
+                            source_index = neighbor_index
+                            break
+                if source_index is not None:
+                    additions.append((index, source_index))
+        if not additions:
+            break
+        for index, source_index in additions:
+            target_offset = index * 4
+            source_offset = source_index * 4
+            # Copy, rather than average or interpolate.  This preserves the
+            # exact baked RGBA of the nearest sampled face pixel and prevents
+            # transparent black from producing dark seams.
+            pixels[target_offset:target_offset + 4] = previous_pixels[source_offset:source_offset + 4]
+            covered[index] = True
 
 
 def _active_output(nodes):
@@ -213,6 +238,7 @@ def _bake_face_texture(
     texture_id: str,
     resolution: int,
     bake_mode: str,
+    edge_padding: int,
 ):
     """Bake one polygon's color and Principled alpha to a transparent PNG."""
 
@@ -304,6 +330,7 @@ def _bake_face_texture(
 
         output = _active_output(nodes)
         principled = surface_source if surface_source is not None and surface_source.bl_idname == "ShaderNodeBsdfPrincipled" else None
+        polygon_mask = _opaque_polygon_mask(width, height, rectangle.uvs)
         if output is not None and principled is not None:
             target_node.image = alpha_image
             alpha_socket = principled.inputs.get("Alpha")
@@ -326,10 +353,9 @@ def _bake_face_texture(
                 color_pixels[offset + 3] = max(0.0, min(1.0, alpha_pixels[offset]))
         else:
             color_pixels = list(color_image.pixels)
-            mask = _opaque_polygon_mask(width, height, rectangle.uvs)
-            for index, alpha_value in enumerate(mask):
+            for index, alpha_value in enumerate(polygon_mask):
                 color_pixels[index * 4 + 3] = alpha_value
-        _dilate_transparent_rgb(color_pixels, width, height)
+        _expand_polygon_border(color_pixels, polygon_mask, width, height, edge_padding)
         color_image.pixels = color_pixels
 
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -383,6 +409,7 @@ def convert_mesh_to_halo(
     texture_resolution: int = 256,
     apply_modifiers: bool = True,
     bake_mode: str = "AUTO",
+    edge_padding: int = 2,
 ):
     """Bake and convert all usable source faces under a new Halo wrapper group."""
 
@@ -432,6 +459,7 @@ def convert_mesh_to_halo(
                 texture_id,
                 texture_resolution,
                 bake_mode,
+                edge_padding,
             )
             image["halo_generated_texture"] = True
             image.pack()

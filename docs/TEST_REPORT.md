@@ -1,15 +1,15 @@
-# Halo Pack Editor 0.2.1 测试报告
+# Halo Pack Editor 0.2.2 测试报告
 
 测试日期：2026-08-27
 宿主：Blender 5.2.0 LTS（`fbe6228777e7`）  
-交付包：`dist/halo_pack_editor-0.2.1.zip`
-SHA-256：`40ECBB43EF99A9D95CF3DC6BF5A759FA62E715E7A6F04B3F1979FA392D12A6AB`
+交付包：`dist/halo_pack_editor-0.2.2.zip`
+SHA-256：`06EB3EADF128E43839D7C3D6C91FCE874A3EDAF0FC6A0C8E56C4CBB974121E9F`
 
 ## 自动化结果
 
 - 纯 Python：17 项测试全部通过。覆盖未知 JSON 字段与旧式写法保留、ZIP 安全、原子导出、资源路径与 PNG/labPBR、坐标矩阵、YXZ 旋转、动画函数、继承、过渡补值/反演/缓动和 `degrees` 行程。
 - Blender Extension：源码 manifest 校验、ZIP 构建、构建包校验均通过。
-- 全新安装：在 `F:\codex-cache\halo-blender-addon\isolated-0.2.1-20260827` 隔离用户目录中执行 `extension install-file --enable`，确认扩展可加载、Cycles 可启用，并可执行材质刷新与 Mesh 转换操作器。
+- 全新安装：在 `F:\codex-cache\halo-blender-addon\isolated-0.2.2-20260827` 隔离用户目录中执行 `extension install-file --enable`，确认扩展可加载、Cycles 可启用，并可执行材质刷新与 Mesh 转换操作器。
 - Hina：导入 57 个组、29 个图元、至少四层结构；检查 Billboard 法线/UV、Ring 表面数与剔除、材质 Alpha 乘法节点；场景同步、ZIP 往返、原子文件夹往返、保存 `.blend` 与重新打开均通过。
 - Shiroko：startup 与 `id_overrides` 在 Blender 时间轴求值无错误，`degrees` 字段由核心求值器验收；从真实常驻动画通道读取既有项，并通过逐行操作器完成新增、编辑、排序与删除测试。
 - 动画 JSON 编辑：成功把 startup 打开为 Blender Text 数据块，在多行 Text Editor 中修改并通过侧栏操作器重新解析、应用；无效 JSON 会阻止应用并报告错误。
@@ -41,6 +41,7 @@ SHA-256：`40ECBB43EF99A9D95CF3DC6BF5A759FA62E715E7A6F04B3F1979FA392D12A6AB`
 - 0.2.0 保存重开：把转换后的层级及生成贴图保存为 `.blend`，重新打开后确认两张贴图均为 packed image，随后再次导出 ZIP 并确认资源路径完整。
 - 0.2.0 任意朝向旋转：修正 Blender 矩阵回写 Halo `Ry × Rx × Rz` 的逆解，避免非水平面通过通用 Euler 转换后朝向偏差；上述水平/竖直几何重建测试覆盖此路径。
 - 0.2.1 源 UV 精确采样：构造一张仅右上区域为绿色、其余区域为红色的分区纹理，材质通过 Texture Coordinate 的普通 `UV` 输出连接 Image Texture，源三角形 UV 全部限制在绿色小区域。转换后统计全部不透明像素，确认绿色总量超过红色四倍，证明烘焙没有再把整张纹理映射到目标矩形。目标烘焙使用显式 UV Map，源活动 UV 及全部命名 UV Map 保持独立。
+- 0.2.2 边缘原色与扩张：以 2 圈扩张转换上述绿色三角形，断言不透明像素数量超过未扩张三角形的 50% 覆盖面积，同时全部可见像素的绿色通道值完全一致，且没有引入红色图集区域；确认扩张复制完整 RGBA，而非与透明黑或相邻颜色平均。
 
 ## 人工验收边界
 

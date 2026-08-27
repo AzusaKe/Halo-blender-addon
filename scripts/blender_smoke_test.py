@@ -98,6 +98,7 @@ assert bpy.ops.halo.convert_mesh(
     source_object=source_object.name,
     texture_resolution=32,
     apply_modifiers=True,
+    edge_padding=2,
 ) == {"FINISHED"}
 converted_wrapper = bpy.context.active_object
 assert converted_wrapper.get("halo_role") == "group"
@@ -136,6 +137,7 @@ assert converted_image.packed_file is not None
 assert resolve_texture_path(converted_primitive.halo_node.texture, scene.halo_project.pack_root) is None
 alpha_values = list(converted_image.pixels)[3::4]
 assert min(alpha_values) < 0.05 and max(alpha_values) > 0.95
+assert sum(value > 0.95 for value in alpha_values) > len(alpha_values) * 0.5
 converted_pixels = list(converted_image.pixels)
 opaque_red = 0.0
 opaque_green = 0.0
@@ -144,6 +146,12 @@ for pixel_offset in range(0, len(converted_pixels), 4):
         opaque_red += converted_pixels[pixel_offset]
         opaque_green += converted_pixels[pixel_offset + 1]
 assert opaque_green > opaque_red * 4.0, (opaque_red, opaque_green)
+opaque_green_values = [
+    converted_pixels[offset + 1]
+    for offset in range(0, len(converted_pixels), 4)
+    if converted_pixels[offset + 3] > 0.9
+]
+assert max(opaque_green_values) - min(opaque_green_values) < 1.0e-6
 vertical_image = next(node.image for node in vertical_primitive.data.materials[0].node_tree.nodes if node.bl_idname == "ShaderNodeTexImage")
 vertical_pixels = list(vertical_image.pixels)
 center_offset = ((int(vertical_image.size[1]) // 2) * int(vertical_image.size[0]) + int(vertical_image.size[0]) // 2) * 4

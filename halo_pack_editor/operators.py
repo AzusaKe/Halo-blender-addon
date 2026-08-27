@@ -864,6 +864,13 @@ if bpy is not None:
             ),
             default="AUTO",
         )
+        edge_padding: IntProperty(
+            name="边缘扩张圈数",
+            description="向面轮廓外复制 N 圈像素；每个新增像素精确复制相邻采样 RGBA，不进行颜色平均",
+            default=2,
+            min=0,
+            max=64,
+        )
 
         @classmethod
         def poll(cls, context):
@@ -876,6 +883,7 @@ if bpy is not None:
             layout.prop(self, "texture_resolution")
             layout.prop(self, "apply_modifiers")
             layout.prop(self, "bake_mode")
+            layout.prop(self, "edge_padding")
             box = layout.box()
             box.label(text="每个有效面 → 一个扁平子组 + Billboard", icon="MESH_PLANE")
             box.label(text="使用源 Mesh 的局部坐标；忽略对象 G/R/S", icon="ORIENTATION_LOCAL")
@@ -906,6 +914,7 @@ if bpy is not None:
                     texture_resolution=self.texture_resolution,
                     apply_modifiers=self.apply_modifiers,
                     bake_mode=self.bake_mode,
+                    edge_padding=self.edge_padding,
                 )
             except Exception as exc:
                 self.report({"ERROR"}, f"Mesh 转换失败：{exc}")
