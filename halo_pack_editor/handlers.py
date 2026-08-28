@@ -16,6 +16,7 @@ from .geometry import mc_rotation_quaternion, mc_to_blender
 from .materials import set_material_visual
 
 _VIEW_DRAW_HANDLE = None
+_SCENE_VIEW_QUATERNIONS: dict[int, tuple[float, float, float, float]] = {}
 
 try:
     # The dependency-free core is the source of truth for the animation
@@ -468,24 +469,46 @@ def _core_scene_animation(scene, root, raw: Mapping[str, Any], time_seconds: flo
         return False
 
 
-def update_face_camera(scene):
-    """Orient face_camera quads toward the active camera when possible."""
+def _scene_key(scene) -> int:
+    try:
+        return int(scene.as_pointer())
+    except (AttributeError, ReferenceError, TypeError, ValueError):
+        return id(scene)
 
-    if bpy is None:
+
+def _apply_face_camera_orientation(scene, world_quaternion, *, remember_view=False):
+    """Apply one world-facing orientation after all parent animation."""
+
+    if bpy is None or scene is None or world_quaternion is None:
         return
-    camera = scene.camera
-    if camera is None:
-        # In a 3D viewport the active region camera is not always scene.camera;
-        # copying its view is outside the persistent handler API, so leave the
-        # static orientation intact until the user assigns a scene camera.
+    try:
+        from mathutils import Quaternion
+        world_quaternion = Quaternion(world_quaternion)
+    except (ImportError, TypeError, ValueError):
         return
-    for obj in bpy.data.objects:
+    if remember_view:
+        _SCENE_VIEW_QUATERNIONS[_scene_key(scene)] = tuple(float(value) for value in world_quaternion)
+    for obj in scene.objects:
         if obj.get("halo_role") != "primitive" or not obj.get("halo_face_camera"):
             continue
         if obj.parent is None:
             continue
         obj.rotation_mode = "QUATERNION"
-        obj.rotation_quaternion = obj.parent.matrix_world.to_quaternion().inverted() @ camera.matrix_world.to_quaternion()
+        obj.rotation_quaternion = obj.parent.matrix_world.to_quaternion().inverted() @ world_quaternion
+
+
+def update_face_camera(scene):
+    """Keep face_camera active across viewport and animation frame updates."""
+
+    if bpy is None or scene is None:
+        return
+    cached_view = _SCENE_VIEW_QUATERNIONS.get(_scene_key(scene))
+    if cached_view is not None:
+        _apply_face_camera_orientation(scene, cached_view)
+        return
+    camera = scene.camera
+    if camera is not None:
+        _apply_face_camera_orientation(scene, camera.matrix_world.to_quaternion())
 
 
 def _draw_face_camera():
@@ -497,11 +520,8 @@ def _draw_face_camera():
     if region_data is None:
         return
     view_quaternion = region_data.view_matrix.inverted().to_quaternion()
-    for obj in bpy.data.objects:
-        if obj.get("halo_role") != "primitive" or not obj.get("halo_face_camera") or obj.parent is None:
-            continue
-        obj.rotation_mode = "QUATERNION"
-        obj.rotation_quaternion = obj.parent.matrix_world.to_quaternion().inverted() @ view_quaternion
+    scene = getattr(bpy.context, "scene", None)
+    _apply_face_camera_orientation(scene, view_quaternion, remember_view=True)
 
 
 def update_animation(scene):
@@ -563,6 +583,10 @@ if bpy is not None:
 
     @persistent
     def halo_load_post(_dummy):
+        # A cached viewport quaternion belongs to the previous screen/file
+        # state.  The first draw in the newly loaded file will establish the
+        # current view; until then update_face_camera may use scene.camera.
+        _SCENE_VIEW_QUATERNIONS.clear()
         for scene in bpy.data.scenes:
             try:
                 from .blender_scene import enforce_managed_transform_locks, update_preview_roots
@@ -633,6 +657,7 @@ def unregister_handlers():
         except (ReferenceError, ValueError):
             pass
         _VIEW_DRAW_HANDLE = None
+    _SCENE_VIEW_QUATERNIONS.clear()
 
 
 __all__ = [
@@ -642,6 +667,7 @@ __all__ = [
     "easing_value",
     "evaluate_transition",
     "transition_duration",
+    "update_face_camera",
     "update_animation",
     "register_handlers",
     "unregister_handlers",

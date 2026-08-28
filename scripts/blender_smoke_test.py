@@ -822,6 +822,44 @@ assert bpy.ops.halo.refresh_geometry() == {"FINISHED"}
 assert billboard.location.length < 1e-8
 assert (billboard.scale - Vector((1.0, 1.0, 1.0))).length < 1e-8
 
+# A face-camera primitive must keep the most recently drawn viewport
+# orientation while its parent group is animated on the timeline.  This is a
+# headless equivalent of rotating the 3D View and pressing Play.
+face_camera_owner = billboard.parent
+original_face_camera_animation = face_camera_owner.halo_node.animation_json
+original_face_camera_animation_raw = face_camera_owner.get("halo_animation_json", "{}")
+original_preview_mode = scene.halo_project.preview_mode
+original_frame = scene.frame_current
+viewport_quaternion = Quaternion((0.9238795325, 0.0, 0.3826834324, 0.0))
+face_camera_animation = json.dumps({
+    "rotation": {
+        "yaw": [{"function": "linear", "start": 0.0, "speed": 45.0}],
+        "pitch": [{"function": "linear", "start": 5.0, "speed": 0.0}],
+        "roll": [{"function": "linear", "start": 0.0, "speed": 0.0}],
+    },
+})
+face_camera_owner.halo_node.animation_json = face_camera_animation
+face_camera_owner["halo_animation_json"] = face_camera_animation
+billboard.halo_node.face_camera = True
+handlers._apply_face_camera_orientation(scene, viewport_quaternion, remember_view=True)
+scene.halo_project.preview_mode = "IDLE"
+parent_rotations = []
+for preview_frame in (10, 30):
+    scene.frame_set(preview_frame)
+    handlers.update_animation(scene)
+    bpy.context.view_layer.update()
+    parent_rotations.append(face_camera_owner.matrix_world.to_quaternion().copy())
+    actual_facing = billboard.matrix_world.to_quaternion()
+    assert actual_facing.rotation_difference(viewport_quaternion).angle < 1e-5
+assert parent_rotations[0].rotation_difference(parent_rotations[1]).angle > 0.1
+billboard.halo_node.face_camera = False
+face_camera_owner.halo_node.animation_json = original_face_camera_animation
+face_camera_owner["halo_animation_json"] = original_face_camera_animation_raw
+handlers._SCENE_VIEW_QUATERNIONS.pop(handlers._scene_key(scene), None)
+scene.halo_project.preview_mode = original_preview_mode
+scene.frame_set(original_frame)
+handlers.update_animation(scene)
+
 owner.halo_node.glowing = False
 assert json.loads(owner.get("halo_raw_json", "{}"))["glowing"] is False
 
