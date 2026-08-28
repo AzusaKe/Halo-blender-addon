@@ -72,6 +72,50 @@ def _select_object(context, obj):
     context.scene.halo_project.active_uuid = obj.get("halo_uuid", "")
 
 
+def _select_objects(context, objects, active=None):
+    """Select a result batch while keeping one deterministic active object."""
+
+    objects = [obj for obj in objects if obj is not None and obj.name in context.scene.objects]
+    if not objects:
+        return
+    for item in context.selected_objects:
+        item.select_set(False)
+    for obj in objects:
+        obj.select_set(True)
+    active = active if active in objects else objects[-1]
+    context.view_layer.objects.active = active
+    if active.get("halo_definition_id"):
+        context.scene.halo_project.active_definition = active.get("halo_definition_id")
+    context.scene.halo_project.active_uuid = active.get("halo_uuid", "")
+
+
+def _selected_sibling_nodes(context, *, required_role=None):
+    """Return selected managed siblings or raise a concise user-facing error."""
+
+    active = _active_object(context)
+    if active is None or active.get("halo_role") not in {GROUP_ROLE, PRIMITIVE_ROLE}:
+        raise ValueError("请选择要操作的部件组或图元")
+    selected = list(context.selected_objects or ())
+    if active not in selected:
+        selected.append(active)
+    invalid = [obj for obj in selected if obj.get("halo_role") not in {GROUP_ROLE, PRIMITIVE_ROLE}]
+    if invalid:
+        raise ValueError("多选时只能选择 Halo 部件组或图元")
+    if required_role is not None and any(obj.get("halo_role") != required_role for obj in selected):
+        label = "部件组" if required_role == GROUP_ROLE else "图元"
+        raise ValueError(f"此移动操作只能同时选择同一父级下的{label}，请取消其他类型的选择")
+    parent = active.parent
+    if parent is None or parent.get("halo_role") not in {ROOT_ROLE, GROUP_ROLE}:
+        raise ValueError("所选部件没有有效的共同父级")
+    if any(obj.parent != parent for obj in selected):
+        raise ValueError("批量操作只允许选择同一父级下的组或图元")
+    definition_id = active.get("halo_definition_id", "")
+    if any(obj.get("halo_definition_id", "") != definition_id for obj in selected):
+        raise ValueError("不能跨光环定义批量操作")
+    sibling_order = {obj.as_pointer(): index for index, obj in enumerate(parent.children)}
+    return sorted(selected, key=lambda obj: sibling_order.get(obj.as_pointer(), len(sibling_order)))
+
+
 _REPARENT_TARGET_ITEMS: list[tuple[str, str, str]] = []
 _PRIMITIVE_MOVE_TARGET_ITEMS: list[tuple[str, str, str]] = []
 _MESH_SOURCE_ITEMS: list[tuple[str, str, str]] = []
@@ -120,6 +164,11 @@ def _reparent_target_items(_self, context):
     if obj is None or obj.get("halo_role") != GROUP_ROLE or bpy is None:
         return _REPARENT_TARGET_ITEMS
 
+    try:
+        selected_groups = _selected_sibling_nodes(context, required_role=GROUP_ROLE)
+    except ValueError:
+        return _REPARENT_TARGET_ITEMS
+
     definition_id = obj.get("halo_definition_id", "")
     candidates = [
         candidate for candidate in bpy.data.objects
@@ -127,16 +176,18 @@ def _reparent_target_items(_self, context):
         and candidate.get("halo_role") in {ROOT_ROLE, GROUP_ROLE}
     ]
 
-    def is_in_active_subtree(candidate):
+    selected_set = set(selected_groups)
+
+    def is_in_selected_subtree(candidate):
         current = candidate
         while current is not None:
-            if current == obj:
+            if current in selected_set:
                 return True
             current = current.parent
         return False
 
     roots = [candidate for candidate in candidates if candidate.get("halo_role") == ROOT_ROLE]
-    groups = [candidate for candidate in candidates if candidate.get("halo_role") == GROUP_ROLE and not is_in_active_subtree(candidate)]
+    groups = [candidate for candidate in candidates if candidate.get("halo_role") == GROUP_ROLE and not is_in_selected_subtree(candidate)]
 
     def group_sort_key(candidate):
         path = []
@@ -167,7 +218,11 @@ def _primitive_move_target_items(_self, context):
     obj = _active_object(context)
     if obj is None or obj.get("halo_role") != PRIMITIVE_ROLE or bpy is None:
         return _PRIMITIVE_MOVE_TARGET_ITEMS
-    source_group = obj.parent
+    try:
+        selected_primitives = _selected_sibling_nodes(context, required_role=PRIMITIVE_ROLE)
+    except ValueError:
+        return _PRIMITIVE_MOVE_TARGET_ITEMS
+    source_group = selected_primitives[0].parent
     definition_id = obj.get("halo_definition_id", "")
     candidates = [
         candidate for candidate in bpy.data.objects
@@ -1173,7 +1228,7 @@ if bpy is not None:
     class HALO_OT_duplicate_node(bpy.types.Operator):
         bl_idname = "halo.duplicate_node"
         bl_label = "在当前父级复制"
-        bl_description = "在当前父级下创建所选组或图元的独立副本"
+        bl_description = "在当前父级下创建所选同级组或图元的独立副本"
         bl_options = {"REGISTER", "UNDO"}
 
         @classmethod
@@ -1182,42 +1237,60 @@ if bpy is not None:
             return obj is not None and obj.get("halo_role") in {GROUP_ROLE, PRIMITIVE_ROLE}
 
         def execute(self, context):
-            obj = _active_object(context)
-            if obj is None or obj.get("halo_role") not in {GROUP_ROLE, PRIMITIVE_ROLE}:
-                self.report({"ERROR"}, "请选择要复制的部件组或图元")
-                return {"CANCELLED"}
+            active = _active_object(context)
             try:
-                clone = _duplicate_node_from_json(context, obj)
-            except Exception as exc:
+                nodes = _selected_sibling_nodes(context)
+            except ValueError as exc:
                 self.report({"ERROR"}, str(exc))
                 return {"CANCELLED"}
-            _select_object(context, clone)
-            role_name = "部件组" if clone.get("halo_role") == GROUP_ROLE else "图元"
-            self.report({"INFO"}, f"已在当前父级下复制{role_name}")
+            clones = []
+            try:
+                for obj in nodes:
+                    clones.append(_duplicate_node_from_json(context, obj))
+            except Exception as exc:
+                for clone in reversed(clones):
+                    if clone.name in bpy.data.objects:
+                        remove_object_tree(clone)
+                if nodes:
+                    sync_definition_from_scene(context.scene, nodes[0].get("halo_definition_id", ""))
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
+            active_index = nodes.index(active) if active in nodes else len(nodes) - 1
+            _select_objects(context, clones, clones[active_index])
+            if len(clones) == 1:
+                role_name = "部件组" if clones[0].get("halo_role") == GROUP_ROLE else "图元"
+                self.report({"INFO"}, f"已在当前父级下复制{role_name}")
+            else:
+                self.report({"INFO"}, f"已在当前父级下复制 {len(clones)} 个所选部件")
             return {"FINISHED"}
 
 
     class HALO_OT_delete_node(bpy.types.Operator):
         bl_idname = "halo.delete_node"
         bl_label = "删除部件"
+        bl_description = "删除所选的同级组或图元；删除组时包含其完整子树"
         bl_options = {"REGISTER", "UNDO"}
 
         def execute(self, context):
-            obj = _active_object(context)
-            if obj is None:
-                self.report({"ERROR"}, "请选择 Halo 部件")
+            try:
+                nodes = _selected_sibling_nodes(context)
+            except ValueError as exc:
+                self.report({"ERROR"}, str(exc))
                 return {"CANCELLED"}
-            definition_id = obj.get("halo_definition_id", "")
-            remove_object_tree(obj)
-            context.scene.halo_project.active_uuid = ""
-            context.scene.halo_project.active_definition = definition_id
+            definition_id = nodes[0].get("halo_definition_id", "")
+            parent = nodes[0].parent
+            for obj in nodes:
+                remove_object_tree(obj)
+            sync_definition_from_scene(context.scene, definition_id)
+            _select_object(context, parent)
+            self.report({"INFO"}, f"已删除 {len(nodes)} 个所选部件")
             return {"FINISHED"}
 
 
     class HALO_OT_reparent(bpy.types.Operator):
         bl_idname = "halo.reparent"
         bl_label = "选择新父级"
-        bl_description = "把当前组移动到光环根或另一个组下"
+        bl_description = "把所选同级组移动到光环根或另一个组下"
         bl_options = {"REGISTER", "UNDO"}
 
         target_uuid: EnumProperty(name="新父级", description="选择光环根或同一光环定义中的另一个组", items=_reparent_target_items)
@@ -1239,10 +1312,15 @@ if bpy is not None:
             return obj is not None and obj.get("halo_role") == GROUP_ROLE
 
         def invoke(self, context, _event):
+            try:
+                selected_groups = _selected_sibling_nodes(context, required_role=GROUP_ROLE)
+            except ValueError as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
             items = _reparent_target_items(self, context)
             valid_ids = {item[0] for item in items}
-            obj = _active_object(context)
-            current_parent_uuid = str(obj.parent.get("halo_uuid", "")) if obj is not None and obj.parent is not None else ""
+            current_parent = selected_groups[0].parent
+            current_parent_uuid = str(current_parent.get("halo_uuid", "")) if current_parent is not None else ""
             if current_parent_uuid in valid_ids:
                 self.target_uuid = current_parent_uuid
             elif items:
@@ -1251,8 +1329,14 @@ if bpy is not None:
 
         def draw(self, context):
             layout = self.layout
-            obj = _active_object(context)
-            layout.label(text=f"移动组：{_group_display_name(obj)}", icon="CONSTRAINT_BONE")
+            try:
+                selected_groups = _selected_sibling_nodes(context, required_role=GROUP_ROLE)
+            except ValueError:
+                selected_groups = []
+            if len(selected_groups) > 1:
+                layout.label(text=f"移动 {len(selected_groups)} 个同级组", icon="CONSTRAINT_BONE")
+            else:
+                layout.label(text=f"移动组：{_group_display_name(_active_object(context))}", icon="CONSTRAINT_BONE")
             layout.prop(self, "target_uuid")
             layout.prop(self, "preserve_world")
             _draw_carry_options(layout, self, include_transition=False)
@@ -1260,47 +1344,62 @@ if bpy is not None:
                 layout.label(text="未携带的变换会在保持世界外观后重置", icon="INFO")
 
         def execute(self, context):
-            obj = _active_object(context)
+            active = _active_object(context)
+            try:
+                selected_groups = _selected_sibling_nodes(context, required_role=GROUP_ROLE)
+            except ValueError as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
             target = object_by_uuid(self.target_uuid)
-            if obj is None or target is None:
+            if target is None:
                 self.report({"ERROR"}, "请选择组和有效的新父级")
                 return {"CANCELLED"}
-            node = getattr(obj, "halo_node", None)
-            local_snapshot = None
-            if node is not None:
-                local_snapshot = (tuple(node.position), tuple(node.rotation), float(node.scale))
+            legal_targets = {item[0] for item in _reparent_target_items(self, context)}
+            if self.target_uuid not in legal_targets:
+                self.report({"ERROR"}, "目标父级无效，或位于某个所选组的子树中")
+                return {"CANCELLED"}
             try:
-                reparent_object(obj, target, self.preserve_world)
-                if not self.preserve_world and node is not None and local_snapshot is not None:
-                    obj["halo_property_update_guard"] = True
-                    try:
-                        node.position = local_snapshot[0]
-                        node.rotation = local_snapshot[1]
-                        node.scale = local_snapshot[2]
-                    finally:
-                        obj.pop("halo_property_update_guard", None)
-                _apply_group_property_selection(
-                    obj,
-                    carry_position=self.carry_position,
-                    carry_rotation=self.carry_rotation,
-                    carry_scale=self.carry_scale,
-                    carry_animation=self.carry_animation,
-                    carry_render=self.carry_render,
-                    carry_extra=self.carry_extra,
-                )
-                sync_definition_from_scene(context.scene, obj.get("halo_definition_id", ""))
+                for obj in selected_groups:
+                    node = getattr(obj, "halo_node", None)
+                    local_snapshot = (
+                        (tuple(node.position), tuple(node.rotation), float(node.scale))
+                        if node is not None else None
+                    )
+                    reparent_object(obj, target, self.preserve_world)
+                    if not self.preserve_world and node is not None and local_snapshot is not None:
+                        obj["halo_property_update_guard"] = True
+                        try:
+                            node.position = local_snapshot[0]
+                            node.rotation = local_snapshot[1]
+                            node.scale = local_snapshot[2]
+                        finally:
+                            obj.pop("halo_property_update_guard", None)
+                    _apply_group_property_selection(
+                        obj,
+                        carry_position=self.carry_position,
+                        carry_rotation=self.carry_rotation,
+                        carry_scale=self.carry_scale,
+                        carry_animation=self.carry_animation,
+                        carry_render=self.carry_render,
+                        carry_extra=self.carry_extra,
+                    )
+                sync_definition_from_scene(context.scene, selected_groups[0].get("halo_definition_id", ""))
             except Exception as exc:
                 self.report({"ERROR"}, str(exc))
                 return {"CANCELLED"}
             context.scene.halo_project.preserve_world_on_reparent = self.preserve_world
-            self.report({"INFO"}, f"已将 {_group_display_name(obj)} 移动到 {_group_display_name(target)}")
+            _select_objects(context, selected_groups, active)
+            if len(selected_groups) == 1:
+                self.report({"INFO"}, f"已将 {_group_display_name(selected_groups[0])} 移动到 {_group_display_name(target)}")
+            else:
+                self.report({"INFO"}, f"已将 {len(selected_groups)} 个组移动到 {_group_display_name(target)}")
             return {"FINISHED"}
 
 
     class HALO_OT_move_primitive(bpy.types.Operator):
         bl_idname = "halo.move_primitive"
         bl_label = "迁移图元到其他父级"
-        bl_description = "复制所属组的属性生成新组，并把当前图元移动到该新组中"
+        bl_description = "复制所属组的属性生成新组，并把所选同组图元移动到该新组中"
         bl_options = {"REGISTER", "UNDO"}
 
         target_uuid: EnumProperty(
@@ -1327,8 +1426,13 @@ if bpy is not None:
             return obj is not None and obj.get("halo_role") == PRIMITIVE_ROLE and obj.parent is not None and obj.parent.get("halo_role") == GROUP_ROLE
 
         def invoke(self, context, _event):
+            try:
+                selected_primitives = _selected_sibling_nodes(context, required_role=PRIMITIVE_ROLE)
+            except ValueError as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
             obj = _active_object(context)
-            source_group = obj.parent if obj is not None else None
+            source_group = selected_primitives[0].parent
             source_node = getattr(source_group, "halo_node", None)
             source_id = str(getattr(source_node, "node_id", "") or "group")
             definition_id = obj.get("halo_definition_id", "") if obj is not None else ""
@@ -1344,25 +1448,36 @@ if bpy is not None:
 
         def draw(self, context):
             layout = self.layout
+            try:
+                selected_primitives = _selected_sibling_nodes(context, required_role=PRIMITIVE_ROLE)
+            except ValueError:
+                selected_primitives = []
             obj = _active_object(context)
             source_group = obj.parent if obj is not None else None
             layout.label(text=f"原所属组：{_group_display_name(source_group)}", icon="OUTLINER_OB_EMPTY")
+            if len(selected_primitives) > 1:
+                layout.label(text=f"将迁移 {len(selected_primitives)} 个同组图元", icon="RESTRICT_SELECT_OFF")
             layout.prop(self, "target_uuid")
             layout.prop(self, "new_group_id")
             _draw_carry_options(layout, self, include_transition=True)
-            layout.label(text="不会复制原组中的其他图元或子组", icon="INFO")
+            layout.label(text="不会复制原组中未选择的图元或子组", icon="INFO")
 
         def execute(self, context):
-            primitive = _active_object(context)
-            source_group = primitive.parent if primitive is not None else None
+            active = _active_object(context)
+            try:
+                primitives = _selected_sibling_nodes(context, required_role=PRIMITIVE_ROLE)
+            except ValueError as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
+            source_group = primitives[0].parent
             target = object_by_uuid(self.target_uuid)
-            if primitive is None or primitive.get("halo_role") != PRIMITIVE_ROLE or source_group is None or source_group.get("halo_role") != GROUP_ROLE:
+            if source_group is None or source_group.get("halo_role") != GROUP_ROLE:
                 self.report({"ERROR"}, "请选择具有有效所属组的图元")
                 return {"CANCELLED"}
             if target is None or target.get("halo_role") not in {ROOT_ROLE, GROUP_ROLE}:
                 self.report({"ERROR"}, "请选择有效的目标父级")
                 return {"CANCELLED"}
-            definition_id = primitive.get("halo_definition_id", "")
+            definition_id = primitives[0].get("halo_definition_id", "")
             if target.get("halo_definition_id") != definition_id:
                 self.report({"ERROR"}, "不能把图元迁移到另一个光环定义")
                 return {"CANCELLED"}
@@ -1405,20 +1520,21 @@ if bpy is not None:
                 source_group_id = str(getattr(getattr(source_group, "halo_node", None), "node_id", "") or "").strip()
                 if source_group_id and self.carry_transition:
                     _copy_transition_overrides(context.scene, definition_id, [(source_group_id, new_group_id)])
-                primitive.parent = new_group
-                blender_scene.reset_primitive_transform(primitive)
-                primitive["halo_parent_uuid"] = new_group.get("halo_uuid", "")
-                primitive["halo_primitive_index"] = 0
-                if getattr(primitive, "halo_node", None) is not None:
-                    primitive.halo_node.parent_uuid = primitive["halo_parent_uuid"]
+                for index, primitive in enumerate(primitives):
+                    primitive.parent = new_group
+                    blender_scene.reset_primitive_transform(primitive)
+                    primitive["halo_parent_uuid"] = new_group.get("halo_uuid", "")
+                    primitive["halo_primitive_index"] = index
+                    if getattr(primitive, "halo_node", None) is not None:
+                        primitive.halo_node.parent_uuid = primitive["halo_parent_uuid"]
                 blender_scene._sync_group(source_group)
                 blender_scene._sync_group(new_group)
                 sync_definition_from_scene(context.scene, definition_id)
             except Exception as exc:
                 self.report({"ERROR"}, f"迁移失败：{exc}")
                 return {"CANCELLED"}
-            _select_object(context, primitive)
-            self.report({"INFO"}, f"已将图元迁移到新组 {new_group_id}")
+            _select_objects(context, primitives, active)
+            self.report({"INFO"}, f"已将 {len(primitives)} 个图元迁移到新组 {new_group_id}")
             return {"FINISHED"}
 
 

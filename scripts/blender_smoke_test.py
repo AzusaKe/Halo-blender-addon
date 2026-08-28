@@ -547,6 +547,131 @@ assert "futureMoveField" not in json.loads(selective_wrapper.get("halo_raw_json"
 assert selective_group_id not in json.loads(definition_item.startup_json).get("id_overrides", {})
 blender_scene.remove_object_tree(selective_wrapper)
 definition_item.startup_json = saved_startup_json
+
+# Batch editing accepts only managed siblings.  Copy/delete may mix groups and
+# primitives because both remain siblings; moving stays type-specific because
+# groups are reparented directly while primitives require one property wrapper.
+batch_collection = definition_root.users_collection[0]
+batch_parent = blender_scene._make_group(
+    batch_collection,
+    definition_root,
+    {"id": "batch_parent", "position": [0, 0, 0], "rotation": [0, 0, 0], "scale": 1, "children": []},
+    renamed_definition_id,
+    "test/batch/parent",
+)
+batch_group_a = blender_scene._make_group(
+    batch_collection,
+    batch_parent,
+    {"id": "batch_group_a", "position": [1, 0, 0], "rotation": [0, 0, 0], "scale": 1, "children": []},
+    renamed_definition_id,
+    "test/batch/group/a",
+)
+batch_group_b = blender_scene._make_group(
+    batch_collection,
+    batch_parent,
+    {"id": "batch_group_b", "position": [2, 0, 0], "rotation": [0, 0, 0], "scale": 1, "children": []},
+    renamed_definition_id,
+    "test/batch/group/b",
+)
+batch_primitive_raw = json.loads(json.dumps(blender_scene._sync_primitive(primitives[0])))
+batch_primitive_a = blender_scene._make_primitive(
+    batch_collection,
+    batch_parent,
+    batch_primitive_raw,
+    renamed_definition_id,
+    "test/batch/primitive/a",
+    True,
+)
+batch_primitive_b = blender_scene._make_primitive(
+    batch_collection,
+    batch_parent,
+    batch_primitive_raw,
+    renamed_definition_id,
+    "test/batch/primitive/b",
+    True,
+)
+blender_scene.sync_definition_from_scene(scene, renamed_definition_id)
+assert panels._definition_primitive_count(scene, renamed_definition_id) == 31
+
+def select_objects_for_batch(items, active):
+    for selected in bpy.context.selected_objects:
+        selected.select_set(False)
+    for item in items:
+        item.select_set(True)
+    bpy.context.view_layer.objects.active = active
+
+
+def assert_batch_operator_rejected(callback):
+    try:
+        result = callback()
+    except RuntimeError:
+        # bpy raises reported operator errors in background Python execution;
+        # the same report appears as a normal Chinese error in the UI.
+        return
+    assert result == {"CANCELLED"}
+
+
+# A mixed sibling selection duplicates and deletes as one batch with new UUIDs.
+original_batch_children = set(batch_parent.children)
+select_objects_for_batch([batch_group_a, batch_primitive_a], batch_primitive_a)
+assert operators._selected_sibling_nodes(bpy.context) == [batch_group_a, batch_primitive_a]
+assert bpy.ops.halo.duplicate_node() == {"FINISHED"}
+batch_copies = list(bpy.context.selected_objects)
+assert len(batch_copies) == 2
+assert {obj.get("halo_role") for obj in batch_copies} == {"group", "primitive"}
+assert all(obj.parent == batch_parent for obj in batch_copies)
+assert all(obj not in original_batch_children for obj in batch_copies)
+assert len({obj.get("halo_uuid") for obj in batch_copies}) == 2
+assert bpy.ops.halo.delete_node() == {"FINISHED"}
+assert bpy.context.active_object == batch_parent
+assert set(batch_parent.children) == original_batch_children
+
+# Different parents and mixed-type movement are rejected before any mutation.
+select_objects_for_batch([batch_group_a, primitives[0]], batch_group_a)
+assert_batch_operator_rejected(lambda: bpy.ops.halo.duplicate_node())
+assert batch_group_a.parent == batch_parent
+select_objects_for_batch([batch_group_a, batch_primitive_a], batch_group_a)
+assert_batch_operator_rejected(
+    lambda: bpy.ops.halo.reparent(preserve_world=False)
+)
+select_objects_for_batch([batch_group_a, batch_primitive_a], batch_primitive_a)
+assert_batch_operator_rejected(
+    lambda: bpy.ops.halo.move_primitive(
+        new_group_id="batch_mixed_rejected",
+    )
+)
+
+# Two sibling groups move together, remain selected, and can move back.
+select_objects_for_batch([batch_group_a, batch_group_b], batch_group_a)
+batch_target_ids = {item[0] for item in operators._reparent_target_items(None, bpy.context)}
+assert target_group.get("halo_uuid") in batch_target_ids
+assert batch_group_a.get("halo_uuid") not in batch_target_ids
+assert batch_group_b.get("halo_uuid") not in batch_target_ids
+assert bpy.ops.halo.reparent(target_uuid=target_group.get("halo_uuid"), preserve_world=False) == {"FINISHED"}
+assert batch_group_a.parent == target_group and batch_group_b.parent == target_group
+assert set(bpy.context.selected_objects) == {batch_group_a, batch_group_b}
+assert bpy.ops.halo.reparent(target_uuid=batch_parent.get("halo_uuid"), preserve_world=False) == {"FINISHED"}
+assert batch_group_a.parent == batch_parent and batch_group_b.parent == batch_parent
+
+# Two primitives from one group migrate into one shared property-copy group.
+select_objects_for_batch([batch_primitive_a, batch_primitive_b], batch_primitive_a)
+batch_move_id = operators._unique_group_id(renamed_definition_id, "batch_primitives_moved")
+assert bpy.ops.halo.move_primitive(
+    target_uuid=target_group.get("halo_uuid"),
+    new_group_id=batch_move_id,
+) == {"FINISHED"}
+batch_move_wrapper = batch_primitive_a.parent
+assert batch_move_wrapper == batch_primitive_b.parent
+assert batch_move_wrapper.parent == target_group
+assert batch_move_wrapper.halo_node.node_id == batch_move_id
+assert set(bpy.context.selected_objects) == {batch_primitive_a, batch_primitive_b}
+assert sorted(int(obj.get("halo_primitive_index", -1)) for obj in (batch_primitive_a, batch_primitive_b)) == [0, 1]
+
+blender_scene.remove_object_tree(batch_move_wrapper)
+blender_scene.remove_object_tree(batch_parent)
+blender_scene.sync_definition_from_scene(scene, renamed_definition_id)
+assert panels._definition_primitive_count(scene, renamed_definition_id) == 29
+
 source_group_raw = json.loads(source_group.get("halo_raw_json", "{}"))
 source_group_raw.pop("futureMoveField", None)
 source_group["halo_raw_json"] = json.dumps(source_group_raw, ensure_ascii=False, separators=(",", ":"))

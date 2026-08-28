@@ -291,11 +291,29 @@ if bpy is not None:
                 box.prop(node, "size", text="尺寸")
                 box.prop(node, "face_camera", text="面向相机")
                 box.operator("halo.refresh_geometry", text="强制刷新", icon="FILE_REFRESH")
+            try:
+                from .operators import _selected_sibling_nodes
+                selected_nodes = _selected_sibling_nodes(context)
+                selection_error = ""
+            except ValueError as exc:
+                selected_nodes = []
+                selection_error = str(exc)
+            if len(context.selected_objects) > 1:
+                selection_box = layout.box()
+                if selected_nodes:
+                    selection_box.label(text=f"已选择 {len(selected_nodes)} 个同级部件", icon="RESTRICT_SELECT_OFF")
+                    selected_roles = {item.get("halo_role") for item in selected_nodes}
+                    if len(selected_roles) > 1:
+                        selection_box.label(text="复制/删除可混选；移动请按组或图元分别选择", icon="INFO")
+                else:
+                    selection_box.label(text=selection_error or "多选不符合批量操作条件", icon="ERROR")
             row = layout.row(align=True)
-            row.operator("halo.duplicate_node", text="在当前父级复制", icon="DUPLICATE")
-            row.operator("halo.delete_node", text="删除", icon="TRASH")
+            count_suffix = f"（{len(selected_nodes)}）" if len(selected_nodes) > 1 else ""
+            row.operator("halo.duplicate_node", text=f"复制所选{count_suffix}", icon="DUPLICATE")
+            row.operator("halo.delete_node", text=f"删除所选{count_suffix}", icon="TRASH")
             if role == "primitive":
-                layout.operator("halo.move_primitive", text="迁移到其他父级…", icon="CONSTRAINT_BONE")
+                move_text = "迁移所选图元到其他父级…" if len(selected_nodes) > 1 else "迁移到其他父级…"
+                layout.operator("halo.move_primitive", text=move_text, icon="CONSTRAINT_BONE")
 
 
     class HALO_PT_mesh_conversion(Panel):
@@ -573,6 +591,16 @@ if bpy is not None:
                 layout.label(text="请选择它下面需要移动的部件组")
                 return
 
+            try:
+                from .operators import _selected_sibling_nodes
+                selected_nodes = _selected_sibling_nodes(context)
+            except ValueError as exc:
+                if len(context.selected_objects) > 1:
+                    layout.label(text=str(exc), icon="ERROR")
+                    layout.label(text="请重新选择同一父级下的部件", icon="INFO")
+                    return
+                selected_nodes = []
+
             if role == "primitive":
                 parent = obj.parent if obj.parent is not None and obj.parent.get("halo_role") == "group" else None
                 layout.label(text="当前选择：图元", icon="MESH_PLANE")
@@ -583,7 +611,13 @@ if bpy is not None:
                     parent_label = str(getattr(parent_node, "node_id", "") or parent.name)
                     layout.label(text=f"所属部件组：{parent_label}")
                     layout.operator("halo.select_parent_group", text="选择所属部件组", icon="RESTRICT_SELECT_OFF")
-                    layout.operator("halo.move_primitive", text="迁移到其他父级…", icon="CONSTRAINT_BONE")
+                    primitive_count = sum(1 for item in selected_nodes if item.get("halo_role") == "primitive")
+                    if len(selected_nodes) > 1 and primitive_count == len(selected_nodes):
+                        layout.label(text=f"已选择 {primitive_count} 个同组图元")
+                    elif len(selected_nodes) > 1:
+                        layout.label(text="移动图元时不能同时选择部件组", icon="ERROR")
+                    move_text = "迁移所选图元到其他父级…" if primitive_count > 1 else "迁移到其他父级…"
+                    layout.operator("halo.move_primitive", text=move_text, icon="CONSTRAINT_BONE")
                 layout.label(text="Halo JSON 中只有组可以改变父级", icon="INFO")
                 return
 
@@ -595,9 +629,15 @@ if bpy is not None:
             else:
                 parent_node = getattr(parent, "halo_node", None)
                 parent_label = str(getattr(parent_node, "node_id", "") or parent.name)
+            selected_group_count = sum(1 for item in selected_nodes if item.get("halo_role") == "group")
+            if len(selected_nodes) > 1 and selected_group_count == len(selected_nodes):
+                layout.label(text=f"已选择 {selected_group_count} 个同级组")
+            elif len(selected_nodes) > 1:
+                layout.label(text="移动组时不能同时选择图元", icon="ERROR")
             layout.label(text=f"当前父级：{parent_label}")
             row = layout.row(align=True)
-            op = row.operator("halo.reparent", text="选择新父级…", icon="CONSTRAINT_BONE")
+            move_text = "为所选组选择新父级…" if selected_group_count > 1 else "选择新父级…"
+            op = row.operator("halo.reparent", text=move_text, icon="CONSTRAINT_BONE")
             op.preserve_world = project.preserve_world_on_reparent
             row.prop(project, "preserve_world_on_reparent", text="保持世界位置")
             layout.label(text="列表会自动排除自身及其子组", icon="INFO")

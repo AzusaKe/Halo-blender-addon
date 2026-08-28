@@ -11,6 +11,7 @@
 - 阻尼：图形化编辑 `linearFactor`、`angularFactor`、`maxLinearDistance`、`maxAngularDegrees`、`angularMomentumFactor`、`maxAngularMomentumDegrees` 和顶层 `allow_angular_momentum`；factor 越接近 1 越快贴近目标，越接近 0 跟随越慢。未知子字段与合法零值保留。Blender 暂不模拟阻尼轨迹。
 - 树形结构：组可移动到同一定义的光环根或另一个组下；候选列表自动排除自身和全部子组。可选择保持世界外观并重算局部 JSON 变换，或保留原局部值。
 - 复制与图元迁移：组复制会递归复制完整子树，图元复制只复制自身，副本位于原父级且使用全新 UUID 与唯一组 ID；相关 startup/shutdown `id_overrides` 会映射到新 ID。组移动可选择携带位置、旋转、缩放、常驻动画、发光/继承及扩展字段；图元迁移创建新属性副本组时提供相同选项，并额外控制 startup/shutdown `id_overrides`。选项默认全开，未携带字段使用 schema 默认值。
+- 同父级批量编辑：0.2.8 起，复制和删除支持同一直接父级下的组/图元混选；组移动只接受同级组，图元迁移只接受同组图元。多个图元共用一个新属性副本组。目标列表会排除所有待移动组及其完整子树；跨父级、跨定义、非 Halo 对象和混合类型移动会在修改场景前整体拒绝。
 - Mesh 转子组：支持当前 Blender 场景中的 Mesh 对象及其可见修改器结果。源网格局部坐标直接作为新包装组局部坐标；对象级 G/R/S 有意忽略。每个有效 polygon 独立投影到自身平面，使用凸包边方向搜索最小面积覆盖矩形，再转换为子组变换与 Billboard 尺寸。非矩形区域通过 PNG alpha 保留；非平面 n-gon 使用投影近似并给出警告。
 - Mesh 材质烘焙：自动模式支持 Principled 基础色与 Alpha、直接 Emission，以及其他节点材质的 Cycles Combined 后备路径；也可明确选择基础色、发光或综合模式。生成贴图随 `.blend` 打包，并在导出时写到当前定义命名空间下。复杂透明节点图、依赖对象/生成坐标或场景灯光的材质属于尽力烘焙，结果可能需要人工检查。
 - Mesh UV：0.2.1 起，源材质采样 UV 与目标烘焙 UV 完全分离；源 Mesh 的所有 UV Map 都会逐面复制，普通 Texture Coordinate `UV`、未连接图像纹理和显式命名 UV Map 均继续读取原始坐标。目标最小矩形 UV 只决定生成 PNG 的像素布局，不参与源材质采样。
