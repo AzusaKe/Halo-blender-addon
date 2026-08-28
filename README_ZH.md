@@ -20,7 +20,7 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 
 1. 使用 Blender 5.2 LTS 或更新版本。
 2. 打开“编辑 → 偏好设置 → 扩展”，选择“从磁盘安装”。
-3. 选择 `halo_pack_editor-0.2.6.zip` 并启用扩展。
+3. 选择 `halo_pack_editor-0.2.7.zip` 并启用扩展。
 4. 在 3D 视图按 `N`，打开“Halo 光环”标签页。
 
 ## 基本工作流
@@ -28,6 +28,7 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 1. 在“项目”面板选择“导入资源包 ZIP”或“导入资源包文件夹”。
 2. 在中文 Blender 的“大纲视图”（默认布局右上角的对象树）中选择光环根、部件组或图元；3D 视图右侧栏中的属性面板会切换到对应编辑内容。若没有看到右侧栏，把鼠标移到 3D 视图后按 `N`，再点击右侧竖排的“Halo 光环”标签。
    - 在“光环属性”中修改 Definition ID 会原子更新当前选择、完整对象树、原始 JSON 与导出 ID；重命名后无需重新选择或重新导入。空 ID 和重复 ID 会被拒绝。
+   - “光环属性”会显示当前定义完整层级中的图元总数；新增、删除、复制、迁移或 Mesh 转换后会随场景实时更新。
    - 静态 JSON 变换以侧栏面板为唯一数据源。受管理的 Root、Group 和 Primitive 会锁定 Blender 原生 G/R/S，防止产生无法保存或错误回写的临时状态。
    - 选择部件组或 Billboard/Ring 图元时，可使用“粗调/细调”以及各轴的 `−/+` 控件编辑所属组的位置、YXZ 旋转和统一缩放；步长可分别设置。
    - 同组多个图元按照 Halo JSON 语义共享所属组变换。
@@ -75,7 +76,7 @@ JSON 会统一输出为 UTF-8、两空格缩进；不保证原始空白逐字节
 ```powershell
 python -m unittest discover -s tests -p 'test_*.py' -v
 blender --command extension validate halo_pack_editor
-blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.2.6.zip
+blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.2.7.zip
 ```
 
 Blender 后台集成测试脚本位于 `scripts/`。测试与下载缓存应放在 `F:\codex-cache\halo-blender-addon`，扩展自身不会依赖该路径。

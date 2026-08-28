@@ -52,6 +52,18 @@ def _transition_property(segment, channel):
     return value if isinstance(value, dict) else None
 
 
+def _definition_primitive_count(scene, definition_id):
+    """Count every managed primitive belonging to one Halo definition."""
+
+    if scene is None or not definition_id:
+        return 0
+    return sum(
+        1
+        for obj in scene.objects
+        if obj.get("halo_role") == "primitive" and obj.get("halo_definition_id") == definition_id
+    )
+
+
 if bpy is not None:
 
     def _nudge_button(row, target, axis, direction, text):
@@ -148,6 +160,10 @@ if bpy is not None:
             error = context.scene.halo_project.get("halo_definition_id_error", "")
             if error:
                 layout.label(text=error, icon="ERROR")
+            layout.label(
+                text=f"图元总数：{_definition_primitive_count(context.scene, item.definition_id)}",
+                icon="MESH_DATA",
+            )
             layout.prop(item, "schema_version", text="Schema")
             layout.prop(item, "orientation_mode", text="朝向")
             layout.prop(item, "sync_offset", text="同步偏移")

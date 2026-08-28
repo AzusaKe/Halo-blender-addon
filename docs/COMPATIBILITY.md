@@ -4,6 +4,7 @@
 - Halo definition schema：类型化支持 1.0.10；更高版本的未知字段按原始 JSON 保留。
 - Minecraft 资源包：新建包默认 `pack_format = 15`。0.2.6 起，导入显示与导出会在缺失或空白时补齐 `description = "Halo Pack Editor export"`；已有字符串或文本组件描述以及未知元数据保持不变。
 - 图元：`billboard`、`ring`；旧版 `shape` 只保证读取与原样保留。
+- 图元计数：0.2.7 起，“光环属性”按当前定义 ID 实时统计场景中全部受管理的 Billboard 与 Ring；计数只用于编辑信息显示，不写入 JSON。
 - 动画函数：`sin`、`cos`、`linear`。
 - 过渡缓动：`linear`、`ease_out_cubic`、`ease_in_out_cubic`。
 - labPBR：保留或复制 `_n`、`_s`、`_e` 邻接贴图，但 Halo 的当前渲染器不会读取它们。

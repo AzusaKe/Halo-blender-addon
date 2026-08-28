@@ -42,6 +42,7 @@ groups = [obj for obj in objects if obj.get("halo_role") == "group"]
 primitives = [obj for obj in objects if obj.get("halo_role") == "primitive"]
 assert len(groups) == 57, len(groups)
 assert len(primitives) == 29, len(primitives)
+assert panels._definition_primitive_count(scene, scene.halo_project.active_definition) == 29
 
 # Convert one ordinary triangular Mesh into a wrapper group containing a flat
 # face group and a baked Billboard.  The transparent half of the minimum
@@ -165,6 +166,7 @@ converted_faces = [child for child in converted_wrapper.children if child.get("h
 assert len(converted_faces) == 2
 converted_primitives = [child for face in converted_faces for child in face.children if child.get("halo_role") == "primitive"]
 assert len(converted_primitives) == 2
+assert panels._definition_primitive_count(scene, scene.halo_project.active_definition) == 31
 horizontal_face = min(converted_faces, key=lambda face: abs(face.matrix_basis.translation.z))
 vertical_face = max(converted_faces, key=lambda face: face.matrix_basis.translation.x)
 converted_primitive = next(child for child in horizontal_face.children if child.get("halo_role") == "primitive")
@@ -273,6 +275,7 @@ if source_material_blue.users == 0:
 if source_atlas.users == 0:
     bpy.data.images.remove(source_atlas)
 blender_scene.sync_definition_from_scene(scene, scene.halo_project.active_definition)
+assert panels._definition_primitive_count(scene, scene.halo_project.active_definition) == 29
 conversion_parent.select_set(True)
 bpy.context.view_layer.objects.active = conversion_parent
 

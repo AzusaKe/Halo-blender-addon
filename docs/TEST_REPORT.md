@@ -1,15 +1,15 @@
-# Halo Pack Editor 0.2.6 测试报告
+# Halo Pack Editor 0.2.7 测试报告
 
 测试日期：2026-08-28
 宿主：Blender 5.2.0 LTS（`fbe6228777e7`）  
-交付包：`dist/halo_pack_editor-0.2.6.zip`
-SHA-256：`95D9EC7230C316A3C0B24E8A742F7824A31FBCF09583682BDF1B6F0D10AA2573`
+交付包：`dist/halo_pack_editor-0.2.7.zip`
+SHA-256：`E34A18B99E4C59A09AF40F7A56F81C88FCEBF3C1358A6C9521820CAC4E4F9B6D`
 
 ## 自动化结果
 
 - 纯 Python：17 项测试全部通过。覆盖未知 JSON 字段与旧式写法保留、ZIP 安全、原子导出、资源路径与 PNG/labPBR、坐标矩阵、YXZ 旋转、动画函数、继承、过渡补值/反演/缓动和 `degrees` 行程。
 - Blender Extension：源码 manifest 校验、ZIP 构建、构建包校验均通过。
-- 全新安装：在 `F:\codex-cache\halo-blender-addon\isolated-0.2.6-20260828-final` 完全隔离的 Blender 配置与扩展目录中执行 `extension install-file --enable`，确认扩展从隔离路径加载，默认 manifest 包含 `pack_format: 15` 与 `description: "Halo Pack Editor export"`。
+- 全新安装：在 `F:\codex-cache\halo-blender-addon\isolated-0.2.7-20260828-final` 完全隔离的 Blender 配置与扩展目录中执行 `extension install-file --enable`，确认扩展从隔离路径加载且图元计数函数可用。
 - Hina：导入 57 个组、29 个图元、至少四层结构；检查 Billboard 法线/UV、Ring 表面数与剔除、材质 Alpha 乘法节点；场景同步、ZIP 往返、原子文件夹往返、保存 `.blend` 与重新打开均通过。
 - Shiroko：startup 与 `id_overrides` 在 Blender 时间轴求值无错误，`degrees` 字段由核心求值器验收；从真实常驻动画通道读取既有项，并通过逐行操作器完成新增、编辑、排序与删除测试。
 - 动画 JSON 编辑：成功把 startup 打开为 Blender Text 数据块，在多行 Text Editor 中修改并通过侧栏操作器重新解析、应用；无效 JSON 会阻止应用并报告错误。
@@ -46,6 +46,7 @@ SHA-256：`95D9EC7230C316A3C0B24E8A742F7824A31FBCF09583682BDF1B6F0D10AA2573`
 - 0.2.4 增量转换与取消：同一转换核心先返回 `PREPARED 0/2`，再只烘焙一个面簇并返回 `BAKING 1/2`；随后关闭迭代任务，断言临时 packed image、文件和部分 Halo 层级全部清理。同步脚本入口继续完整转换 3 个源面为 2 张贴图。隔离安装另验证进度属性、交互标记和取消操作器均已注册。
 - 0.2.5 直接 UV 采样：断言操作器选项默认关闭；显式启用后，同一绿色图集材质按源 UV 直接生成贴图，全部有效像素保持一致且未采到红色区域；纯色 Principled 面也走直接路径。带 Mapping 节点的坐标链会被保守识别为不支持并回退 Cycles。
 - 0.2.6 资源包描述补全：分别通过纯 Python 导出器和 Blender 场景导出器移除 `pack.description` 后导出，断言结果自动补为 `Halo Pack Editor export`、`pack_format` 保持 15、未知元数据保留；另断言已有自定义中文描述不会被覆盖。
+- 0.2.7 当前光环图元总数：Hina 导入后按当前定义统计为 29；Mesh 转换临时新增两个 Billboard 后实时变为 31；删除转换层级后恢复 29。计数基于当前场景与定义 ID，不污染 JSON。
 
 ## 人工验收边界
 
