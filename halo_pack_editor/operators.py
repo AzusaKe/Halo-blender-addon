@@ -863,6 +863,11 @@ if bpy is not None:
             description="使用可见修改器求值后的网格；对象自身的位置、旋转和缩放按约定不写入包装组",
             default=True,
         )
+        direct_uv_sampling: BoolProperty(
+            name="直接 UV 采样",
+            description="默认关闭；简单 Image Texture 材质绕过 Cycles 直接按原 UV 采样，复杂材质自动回退 Cycles",
+            default=False,
+        )
         bake_mode: EnumProperty(
             name="材质烘焙模式",
             items=(
@@ -897,6 +902,7 @@ if bpy is not None:
             layout.prop(self, "source_object")
             layout.prop(self, "texture_resolution")
             layout.prop(self, "apply_modifiers")
+            layout.prop(self, "direct_uv_sampling")
             layout.prop(self, "bake_mode")
             layout.prop(self, "edge_padding")
             layout.prop(self, "merge_coplanar")
@@ -983,7 +989,7 @@ if bpy is not None:
                 if result.warnings:
                     self.report({"WARNING"}, f"已转换 {result.face_count} 个面；另有 {len(result.warnings)} 条警告")
                 else:
-                    self.report({"INFO"}, f"已转换 {result.face_count} 个面并烘焙 {total} 张贴图")
+                    self.report({"INFO"}, f"已转换 {result.face_count} 个面并生成 {total} 张贴图")
                 return {"FINISHED"}
             except Exception as exc:
                 iterator = getattr(self, "_iterator", None)
@@ -1008,9 +1014,9 @@ if bpy is not None:
             total = int(update.get("total", 0))
             phase = str(update.get("phase", ""))
             status = (
-                f"已分析 {int(update.get('source_faces', 0))} 个有效面，准备烘焙"
+                f"已分析 {int(update.get('source_faces', 0))} 个有效面，准备生成贴图"
                 if phase == "PREPARED"
-                else f"正在烘焙面簇 {completed}/{total}"
+                else f"正在处理面簇 {completed}/{total}"
             )
             self._set_progress(
                 context,
@@ -1053,6 +1059,7 @@ if bpy is not None:
                     bake_mode=self.bake_mode,
                     edge_padding=self.edge_padding,
                     merge_coplanar=self.merge_coplanar,
+                    direct_uv_sampling=self.direct_uv_sampling,
                 )
                 self._timer = context.window_manager.event_timer_add(0.05, window=context.window)
                 context.window_manager.modal_handler_add(self)
@@ -1075,6 +1082,7 @@ if bpy is not None:
                     bake_mode=self.bake_mode,
                     edge_padding=self.edge_padding,
                     merge_coplanar=self.merge_coplanar,
+                    direct_uv_sampling=self.direct_uv_sampling,
                 )
             except Exception as exc:
                 self.report({"ERROR"}, f"Mesh 转换失败：{exc}")
@@ -1083,7 +1091,7 @@ if bpy is not None:
             if result.warnings:
                 self.report({"WARNING"}, f"已转换 {result.face_count} 个面；另有 {len(result.warnings)} 条警告")
             else:
-                self.report({"INFO"}, f"已转换 {result.face_count} 个面并烘焙 {len(result.texture_ids)} 张贴图")
+                self.report({"INFO"}, f"已转换 {result.face_count} 个面并生成 {len(result.texture_ids)} 张贴图")
             return {"FINISHED"}
 
 

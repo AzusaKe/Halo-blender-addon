@@ -42,11 +42,26 @@ except ImportError:  # Direct script/test import.
 
 
 PACK_FORMAT = 15
+DEFAULT_PACK_DESCRIPTION = "Halo Pack Editor export"
 SCHEMA_VERSION = "1.0.10"
 PBR_SUFFIXES = ("_n", "_s", "_e")
 IDENTIFIER_RE = re.compile(r"^[a-z0-9_.-]+:[a-z0-9_./-]+$")
 NAMESPACE_RE = re.compile(r"^[a-z0-9_.-]+$")
 RESOURCE_PATH_RE = re.compile(r"^[a-z0-9_./-]+$")
+
+
+def _complete_pack_mcmeta(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Add required Minecraft metadata fields while retaining unknown data."""
+
+    metadata = clone_ast(dict(value)) if isinstance(value, Mapping) else {}
+    source_pack = metadata.get("pack")
+    pack = clone_ast(dict(source_pack)) if isinstance(source_pack, Mapping) else {}
+    pack.setdefault("pack_format", PACK_FORMAT)
+    description = pack.get("description")
+    if description is None or (isinstance(description, str) and not description.strip()):
+        pack["description"] = DEFAULT_PACK_DESCRIPTION
+    metadata["pack"] = pack
+    return metadata
 
 
 class PackIOError(ValueError):
@@ -360,7 +375,7 @@ class PackProject:
 
 def new_project(
     *,
-    description: str = "Halo resource pack",
+    description: str = DEFAULT_PACK_DESCRIPTION,
     pack_format: int = PACK_FORMAT,
 ) -> PackProject:
     """Create a new empty pack with the current default pack metadata."""
@@ -1124,13 +1139,13 @@ def _export_entries(project: PackProject | Any) -> dict[str, bytes]:
     metadata_raw = getattr(project, "pack_mcmeta_raw", None)
     metadata_document = getattr(project, "pack_mcmeta_document", None)
     if metadata is not None:
-        entries["pack.mcmeta"] = dumps(metadata, newline=True).encode("utf-8")
+        entries["pack.mcmeta"] = dumps(_complete_pack_mcmeta(metadata), newline=True).encode("utf-8")
     elif metadata_raw is not None:
         entries["pack.mcmeta"] = bytes(metadata_raw)
     elif metadata_document is not None and hasattr(metadata_document, "data"):
-        entries["pack.mcmeta"] = dumps(metadata_document.data, newline=True).encode("utf-8")
+        entries["pack.mcmeta"] = dumps(_complete_pack_mcmeta(metadata_document.data), newline=True).encode("utf-8")
     else:
-        entries["pack.mcmeta"] = dumps({"pack": {"pack_format": PACK_FORMAT, "description": "Halo resource pack"}}, newline=True).encode("utf-8")
+        entries["pack.mcmeta"] = dumps(_complete_pack_mcmeta(None), newline=True).encode("utf-8")
     return entries
 
 

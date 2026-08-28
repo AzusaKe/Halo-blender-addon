@@ -40,6 +40,21 @@ from .models import (
 )
 
 
+DEFAULT_PACK_DESCRIPTION = "Halo Pack Editor export"
+
+
+def _complete_pack_meta(value: Mapping[str, Any] | None, *, pack_format: int = 15) -> dict[str, Any]:
+    metadata = clone_json(dict(value)) if isinstance(value, Mapping) else {}
+    source_pack = metadata.get("pack")
+    pack = clone_json(dict(source_pack)) if isinstance(source_pack, Mapping) else {}
+    pack.setdefault("pack_format", pack_format)
+    description = pack.get("description")
+    if description is None or (isinstance(description, str) and not description.strip()):
+        pack["description"] = DEFAULT_PACK_DESCRIPTION
+    metadata["pack"] = pack
+    return metadata
+
+
 class SchemaError(ValueError):
     """Raised for JSON that cannot identify a Halo definition."""
 
@@ -457,7 +472,7 @@ def project_files(project: PackProject, *, preserve_unknown: bool = True) -> dic
 
     result = dict(project.files)
     if project.pack_meta:
-        result["pack.mcmeta"] = (json.dumps(project.pack_meta, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        result["pack.mcmeta"] = (json.dumps(_complete_pack_meta(project.pack_meta), ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     for definition in project.definitions:
         target = _definition_path(definition)
         result[target] = dumps_definition(definition, preserve_unknown=preserve_unknown).encode("utf-8")
@@ -512,7 +527,7 @@ def write_pack(
     return destination
 
 
-def new_project(*, pack_format: int = 15, description: str = "Halo resource pack") -> PackProject:
+def new_project(*, pack_format: int = 15, description: str = DEFAULT_PACK_DESCRIPTION) -> PackProject:
     return PackProject(pack_meta={"pack": {"pack_format": pack_format, "description": description}})
 
 

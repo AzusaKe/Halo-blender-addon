@@ -7,6 +7,7 @@ import re
 import shutil
 import tempfile
 import uuid
+from array import array
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,6 +41,10 @@ class MeshConversionResult:
     texture_ids: list[str]
     texture_paths: list[str]
     warnings: list[str]
+
+
+class DirectUVUnsupported(ValueError):
+    """The material cannot be represented by the conservative UV fast path."""
 
 
 def _convex_hull(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
@@ -283,6 +288,251 @@ def _active_output(nodes):
     )
 
 
+def _direct_uv_material(source_obj, polygons, source_mesh):
+    material_index = polygons[0].material_index
+    material = (
+        source_obj.material_slots[material_index].material
+        if material_index < len(source_obj.material_slots)
+        else None
+    )
+    if material is None:
+        return {
+            "image": None,
+            "color": (0.8, 0.8, 0.8, 1.0),
+            "alpha": 1.0,
+            "strength": 1.0,
+            "uv_layer": None,
+            "interpolation": "Closest",
+            "extension": "EXTEND",
+            "use_image_alpha": False,
+        }
+    if not material.use_nodes or material.node_tree is None:
+        color = tuple(float(value) for value in material.diffuse_color)
+        return {
+            "image": None,
+            "color": color,
+            "alpha": color[3],
+            "strength": 1.0,
+            "uv_layer": None,
+            "interpolation": "Closest",
+            "extension": "EXTEND",
+            "use_image_alpha": False,
+        }
+    nodes = material.node_tree.nodes
+    output = _active_output(nodes)
+    if output is None or not output.inputs["Surface"].is_linked:
+        raise DirectUVUnsupported("材质没有直接连接的 Surface 输出")
+    shader = output.inputs["Surface"].links[0].from_node
+    image_node = None
+    use_image_alpha = False
+    strength = 1.0
+    if shader.bl_idname == "ShaderNodeBsdfPrincipled":
+        color_socket = shader.inputs.get("Base Color")
+        alpha_socket = shader.inputs.get("Alpha")
+        color = tuple(float(value) for value in color_socket.default_value)
+        alpha = float(alpha_socket.default_value) if alpha_socket is not None else 1.0
+        if color_socket.is_linked:
+            color_link = color_socket.links[0]
+            image_node = color_link.from_node
+            if image_node.bl_idname != "ShaderNodeTexImage" or color_link.from_socket.name != "Color":
+                raise DirectUVUnsupported("Base Color 不是直接 Image Texture")
+        if alpha_socket is not None and alpha_socket.is_linked:
+            alpha_link = alpha_socket.links[0]
+            if image_node is None or alpha_link.from_node != image_node or alpha_link.from_socket.name != "Alpha":
+                raise DirectUVUnsupported("Alpha 不是同一 Image Texture 的直接 Alpha 输出")
+            use_image_alpha = True
+    elif shader.bl_idname == "ShaderNodeEmission":
+        color_socket = shader.inputs.get("Color")
+        strength_socket = shader.inputs.get("Strength")
+        color = tuple(float(value) for value in color_socket.default_value)
+        alpha = 1.0
+        if strength_socket is not None and strength_socket.is_linked:
+            raise DirectUVUnsupported("Emission Strength 使用了节点输入")
+        strength = float(strength_socket.default_value) if strength_socket is not None else 1.0
+        if color_socket.is_linked:
+            color_link = color_socket.links[0]
+            image_node = color_link.from_node
+            if image_node.bl_idname != "ShaderNodeTexImage" or color_link.from_socket.name != "Color":
+                raise DirectUVUnsupported("Emission Color 不是直接 Image Texture")
+    else:
+        raise DirectUVUnsupported(f"Surface 节点 {shader.bl_idname} 需要 Cycles")
+
+    uv_layer_name = None
+    interpolation = "Closest"
+    extension = "EXTEND"
+    image = None
+    if image_node is not None:
+        image = image_node.image
+        if image is None or image.source in {"TILED", "SEQUENCE", "MOVIE"}:
+            raise DirectUVUnsupported("Image Texture 为空或使用 UDIM/序列/视频")
+        if image_node.projection != "FLAT":
+            raise DirectUVUnsupported("Image Texture 不是 Flat 投影")
+        vector_socket = image_node.inputs.get("Vector")
+        if vector_socket is not None and vector_socket.is_linked:
+            vector_link = vector_socket.links[0]
+            vector_node = vector_link.from_node
+            if vector_node.bl_idname == "ShaderNodeUVMap" and vector_link.from_socket.name == "UV":
+                uv_layer_name = str(vector_node.uv_map or "")
+            elif vector_node.bl_idname == "ShaderNodeTexCoord" and vector_link.from_socket.name == "UV":
+                uv_layer_name = source_mesh.uv_layers.active.name if source_mesh.uv_layers.active else ""
+            else:
+                raise DirectUVUnsupported("Image Texture 坐标包含 Mapping 或非 UV 节点")
+        else:
+            uv_layer_name = source_mesh.uv_layers.active.name if source_mesh.uv_layers.active else ""
+        if not uv_layer_name or source_mesh.uv_layers.get(uv_layer_name) is None:
+            raise DirectUVUnsupported("材质引用的 UV Map 不存在")
+        interpolation = str(image_node.interpolation)
+        extension = str(image_node.extension)
+    return {
+        "image": image,
+        "color": color,
+        "alpha": alpha,
+        "strength": strength,
+        "uv_layer": uv_layer_name,
+        "interpolation": interpolation,
+        "extension": extension,
+        "use_image_alpha": use_image_alpha,
+    }
+
+
+def _image_pixels(image, cache):
+    key = int(image.as_pointer())
+    cached = cache.get(key)
+    width, height = int(image.size[0]), int(image.size[1])
+    if cached is not None and cached[0] == width and cached[1] == height:
+        return cached
+    if width <= 0 or height <= 0:
+        raise DirectUVUnsupported("源图像尺寸为零")
+    pixels = array("f", [0.0]) * (width * height * 4)
+    image.pixels.foreach_get(pixels)
+    cached = (width, height, pixels)
+    cache[key] = cached
+    return cached
+
+
+def _pixel_index(index: int, size: int, extension: str):
+    if extension == "REPEAT":
+        return index % size
+    if extension == "MIRROR":
+        period = size * 2
+        mirrored = index % period
+        return mirrored if mirrored < size else period - 1 - mirrored
+    if extension == "CLIP" and not 0 <= index < size:
+        return None
+    return max(0, min(size - 1, index))
+
+
+def _sample_rgba(source, u: float, v: float, interpolation: str, extension: str):
+    width, height, pixels = source
+
+    def fetch(x, y):
+        x = _pixel_index(x, width, extension)
+        y = _pixel_index(y, height, extension)
+        if x is None or y is None:
+            return (0.0, 0.0, 0.0, 0.0)
+        offset = (y * width + x) * 4
+        return tuple(float(pixels[offset + channel]) for channel in range(4))
+
+    if interpolation == "Closest":
+        return fetch(math.floor(u * width), math.floor(v * height))
+    x, y = u * width - 0.5, v * height - 0.5
+    x0, y0 = math.floor(x), math.floor(y)
+    tx, ty = x - x0, y - y0
+    samples = (fetch(x0, y0), fetch(x0 + 1, y0), fetch(x0, y0 + 1), fetch(x0 + 1, y0 + 1))
+    return tuple(
+        (samples[0][channel] * (1.0 - tx) + samples[1][channel] * tx) * (1.0 - ty)
+        + (samples[2][channel] * (1.0 - tx) + samples[3][channel] * tx) * ty
+        for channel in range(4)
+    )
+
+
+def _barycentric(point, a, b, c):
+    denominator = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1])
+    if abs(denominator) <= 1.0e-14:
+        return None
+    first = ((b[1] - c[1]) * (point[0] - c[0]) + (c[0] - b[0]) * (point[1] - c[1])) / denominator
+    second = ((c[1] - a[1]) * (point[0] - c[0]) + (a[0] - c[0]) * (point[1] - c[1])) / denominator
+    third = 1.0 - first - second
+    if min(first, second, third) < -1.0e-8:
+        return None
+    return first, second, third
+
+
+def _sample_surface_texture(
+    source_obj,
+    source_mesh,
+    polygons,
+    rectangle,
+    destination,
+    texture_id,
+    resolution,
+    edge_padding,
+    image_cache,
+):
+    """Directly rasterize a conservative simple Image Texture material."""
+
+    config = _direct_uv_material(source_obj, polygons, source_mesh)
+    width, height = _texture_size(rectangle, resolution)
+    target_pixels = array("f", [0.0]) * (width * height * 4)
+    polygon_mask = [0.0] * (width * height)
+    source_pixels = _image_pixels(config["image"], image_cache) if config["image"] is not None else None
+    uv_layer = source_mesh.uv_layers.get(config["uv_layer"]) if config["uv_layer"] else None
+    polygon_indices = {polygon.index for polygon in polygons}
+    source_mesh.calc_loop_triangles()
+    for triangle in source_mesh.loop_triangles:
+        if triangle.polygon_index not in polygon_indices:
+            continue
+        target_uvs = [_rectangle_uv(rectangle, source_mesh.vertices[index].co) for index in triangle.vertices]
+        source_uvs = [tuple(uv_layer.data[loop_index].uv) for loop_index in triangle.loops] if uv_layer else None
+        min_x = max(0, math.floor(min(value[0] for value in target_uvs) * width))
+        max_x = min(width - 1, math.ceil(max(value[0] for value in target_uvs) * width) - 1)
+        min_y = max(0, math.floor(min(value[1] for value in target_uvs) * height))
+        max_y = min(height - 1, math.ceil(max(value[1] for value in target_uvs) * height) - 1)
+        for y in range(min_y, max_y + 1):
+            for x in range(min_x, max_x + 1):
+                weights = _barycentric(((x + 0.5) / width, (y + 0.5) / height), *target_uvs)
+                if weights is None:
+                    continue
+                if source_pixels is None:
+                    rgba = config["color"]
+                else:
+                    source_u = sum(weights[index] * source_uvs[index][0] for index in range(3))
+                    source_v = sum(weights[index] * source_uvs[index][1] for index in range(3))
+                    rgba = _sample_rgba(
+                        source_pixels,
+                        source_u,
+                        source_v,
+                        config["interpolation"],
+                        config["extension"],
+                    )
+                target_index = y * width + x
+                offset = target_index * 4
+                target_pixels[offset] = rgba[0] * config["strength"]
+                target_pixels[offset + 1] = rgba[1] * config["strength"]
+                target_pixels[offset + 2] = rgba[2] * config["strength"]
+                target_pixels[offset + 3] = (
+                    rgba[3] * config["alpha"] if config["use_image_alpha"] else config["alpha"]
+                )
+                polygon_mask[target_index] = 1.0
+    _expand_polygon_border(target_pixels, polygon_mask, width, height, edge_padding)
+    token = uuid.uuid4().hex[:10]
+    image = bpy.data.images.new(f"Halo Mesh UV Face {token}", width=width, height=height, alpha=True)
+    try:
+        image.pixels.foreach_set(target_pixels)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        image.filepath_raw = str(destination)
+        image.file_format = "PNG"
+        image.save()
+        image["halo_texture_id"] = texture_id
+        image["halo_source_path"] = str(destination)
+        image["halo_direct_uv"] = True
+        return image
+    except Exception:
+        if image.users == 0:
+            bpy.data.images.remove(image)
+        raise
+
+
 def _bake_surface_texture(
     context,
     source_obj,
@@ -483,6 +733,7 @@ def iter_mesh_conversion(
     bake_mode: str = "AUTO",
     edge_padding: int = 2,
     merge_coplanar: bool = True,
+    direct_uv_sampling: bool = False,
 ):
     """Yield after preparation and every baked surface, then return the result."""
 
@@ -509,6 +760,7 @@ def iter_mesh_conversion(
     created_paths: list[str] = []
     created_images: list[object] = []
     wrapper = None
+    image_cache = {}
     try:
         valid_polygons = []
         for polygon in mesh.polygons:
@@ -537,18 +789,35 @@ def iter_mesh_conversion(
             )
             texture_id = f"{namespace}:{resource_folder}/face_{first_index:04d}.png"
             destination = bake_root / f"face_{first_index:04d}.png"
-            image = _bake_surface_texture(
-                context,
-                evaluated_obj,
-                mesh,
-                cluster,
-                rectangle,
-                destination,
-                texture_id,
-                texture_resolution,
-                bake_mode,
-                edge_padding,
-            )
+            image = None
+            if direct_uv_sampling:
+                try:
+                    image = _sample_surface_texture(
+                        evaluated_obj,
+                        mesh,
+                        cluster,
+                        rectangle,
+                        destination,
+                        texture_id,
+                        texture_resolution,
+                        edge_padding,
+                        image_cache,
+                    )
+                except DirectUVUnsupported as exc:
+                    warnings.append(f"面簇 {first_index}: 直接 UV 不适用（{exc}），已回退 Cycles")
+            if image is None:
+                image = _bake_surface_texture(
+                    context,
+                    evaluated_obj,
+                    mesh,
+                    cluster,
+                    rectangle,
+                    destination,
+                    texture_id,
+                    texture_resolution,
+                    bake_mode,
+                    edge_padding,
+                )
             image["halo_generated_texture"] = True
             image.pack()
             image.filepath_raw = ""
@@ -667,6 +936,7 @@ def convert_mesh_to_halo(
     bake_mode: str = "AUTO",
     edge_padding: int = 2,
     merge_coplanar: bool = True,
+    direct_uv_sampling: bool = False,
 ):
     """Synchronously consume the incremental converter for scripts/tests."""
 
@@ -679,6 +949,7 @@ def convert_mesh_to_halo(
         bake_mode=bake_mode,
         edge_padding=edge_padding,
         merge_coplanar=merge_coplanar,
+        direct_uv_sampling=direct_uv_sampling,
     )
     while True:
         try:

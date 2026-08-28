@@ -29,6 +29,7 @@ from halo_pack_editor.core.json_codec import (  # noqa: E402
     parse_json,
 )
 from halo_pack_editor.core.pack_io import (  # noqa: E402
+    DEFAULT_PACK_DESCRIPTION,
     DuplicateArchiveEntryError,
     PackIOError,
     PackProject,
@@ -161,6 +162,27 @@ class PackIOTests(unittest.TestCase):
                 self.assertIn("pack.png", archive.namelist())
                 self.assertIn("unknown.bin", archive.namelist())
                 self.assertEqual(json.loads(archive.read("pack.mcmeta"))["custom"], "保留")
+
+    def test_export_completes_missing_description_without_overwriting_custom_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "pack"
+            self.make_folder(root)
+            project = import_pack(root)
+            project.pack_mcmeta["pack"].pop("description")
+            project.pack_mcmeta["unknown_meta"] = {"keep": True}
+            repaired = Path(tmp) / "repaired"
+            export_folder(project, repaired)
+            repaired_meta = json.loads((repaired / "pack.mcmeta").read_text(encoding="utf-8"))
+            self.assertEqual(repaired_meta["pack"]["pack_format"], 15)
+            self.assertEqual(repaired_meta["pack"]["description"], DEFAULT_PACK_DESCRIPTION)
+            self.assertEqual(repaired_meta["unknown_meta"], {"keep": True})
+
+            project.pack_mcmeta["pack"]["description"] = "自定义描述"
+            custom = Path(tmp) / "custom.zip"
+            export_zip(project, custom)
+            with zipfile.ZipFile(custom) as archive:
+                custom_meta = json.loads(archive.read("pack.mcmeta"))
+            self.assertEqual(custom_meta["pack"]["description"], "自定义描述")
 
     def test_export_does_not_overwrite_source_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

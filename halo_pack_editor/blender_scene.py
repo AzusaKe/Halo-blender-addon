@@ -45,7 +45,8 @@ ROOT_ROLE = "definition_root"
 GROUP_ROLE = "group"
 PRIMITIVE_ROLE = "primitive"
 HEAD_ROLE = "head_preview"
-DEFAULT_MANIFEST = {"pack": {"pack_format": 15, "description": "Halo Pack Editor export"}}
+DEFAULT_PACK_DESCRIPTION = "Halo Pack Editor export"
+DEFAULT_MANIFEST = {"pack": {"pack_format": 15, "description": DEFAULT_PACK_DESCRIPTION}}
 UUID_NAMESPACE = uuid.UUID("f4d8d3c2-2d16-4c04-98cb-5fd8af7e2b64")
 
 # Typed core projects are kept in memory while a Blender scene is open.  The
@@ -57,6 +58,20 @@ _CORE_PROJECTS: dict[str, Any] = {}
 
 def _json_copy(value: Any) -> Any:
     return copy.deepcopy(value)
+
+
+def _complete_manifest(value: Any) -> dict[str, Any]:
+    """Return valid Minecraft pack metadata without dropping unknown keys."""
+
+    manifest = _json_copy(dict(value)) if isinstance(value, Mapping) else {}
+    source_pack = manifest.get("pack")
+    pack = _json_copy(dict(source_pack)) if isinstance(source_pack, Mapping) else {}
+    pack.setdefault("pack_format", 15)
+    description = pack.get("description")
+    if description is None or (isinstance(description, str) and not description.strip()):
+        pack["description"] = DEFAULT_PACK_DESCRIPTION
+    manifest["pack"] = pack
+    return manifest
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -260,6 +275,7 @@ def read_pack(path: str | os.PathLike[str]) -> dict[str, Any]:
             manifest = _json_copy(DEFAULT_MANIFEST)
     else:
         manifest = _json_copy(DEFAULT_MANIFEST)
+    manifest = _complete_manifest(manifest)
     definitions = []
     if core_project is not None:
         for asset in getattr(core_project, "definitions", ()):
@@ -995,7 +1011,7 @@ def export_pack_from_scene(scene, target_path: str | os.PathLike[str], zip_outpu
                 manifest = dict(parsed_manifest)
         except (TypeError, ValueError):
             pass
-        manifest.setdefault("pack", {}).setdefault("pack_format", 15)
+        manifest = _complete_manifest(manifest)
         (temporary / "pack.mcmeta").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         for item in scene.halo_project.definitions:
             raw = raw_definitions.get(item.definition_id)

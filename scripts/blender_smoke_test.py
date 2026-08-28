@@ -21,11 +21,18 @@ from halo_pack_editor import blender_scene, handlers, operators, panels
 from halo_pack_editor.core.pack_io import import_pack
 from halo_pack_editor.geometry import mc_rotation_quaternion, mc_to_blender, ring_mesh
 from halo_pack_editor.materials import assign_material, create_halo_material, resolve_texture_path
-from halo_pack_editor.mesh_conversion import _coplanar_clusters, _expand_polygon_border, iter_mesh_conversion
+from halo_pack_editor.mesh_conversion import (
+    DirectUVUnsupported,
+    _coplanar_clusters,
+    _direct_uv_material,
+    _expand_polygon_border,
+    iter_mesh_conversion,
+)
 
 
 halo_pack_editor.register()
 scene = bpy.context.scene
+assert bpy.ops.halo.convert_mesh.get_rna_type().properties["direct_uv_sampling"].default is False
 source = Path(r"F:\HaloPackTool\output\Individual\Hina.zip")
 data = blender_scene.import_project_to_scene(bpy.context, source, replace=True)
 assert len(data["definitions"]) == 1
@@ -91,6 +98,19 @@ source_shader_blue = next(node for node in source_material_blue.node_tree.nodes 
 source_shader_blue.inputs["Base Color"].default_value = (0.1, 0.2, 0.9, 1.0)
 source_mesh.materials.append(source_material_blue)
 source_mesh.polygons[2].material_index = 1
+# The conservative fast path must reject coordinate-processing node chains;
+# the public converter then falls back to the existing Cycles bake for these
+# and all other complex materials.
+source_links.remove(source_image_node.inputs["Vector"].links[0])
+source_mapping = source_nodes.new("ShaderNodeMapping")
+source_links.new(source_texcoord.outputs["UV"], source_mapping.inputs["Vector"])
+source_links.new(source_mapping.outputs["Vector"], source_image_node.inputs["Vector"])
+try:
+    _direct_uv_material(source_object, [source_mesh.polygons[0]], source_mesh)
+except DirectUVUnsupported:
+    pass
+else:
+    raise AssertionError("Mapping node must force the direct UV path to fall back")
 assert sorted(len(cluster) for cluster in _coplanar_clusters(source_mesh, source_mesh.polygons, True)) == [1, 2]
 assert len(_coplanar_clusters(source_mesh, source_mesh.polygons, False)) == 3
 for selected in bpy.context.selected_objects:
@@ -111,20 +131,30 @@ cancel_iterator = iter_mesh_conversion(
     apply_modifiers=True,
     edge_padding=0,
     merge_coplanar=True,
+    direct_uv_sampling=True,
 )
 prepared_update = next(cancel_iterator)
 assert prepared_update["phase"] == "PREPARED" and prepared_update["total"] == 2
 baked_update = next(cancel_iterator)
 assert baked_update["phase"] == "BAKING" and baked_update["completed"] == 1
+fallback_images = [
+    image for image in bpy.data.images
+    if image.name not in generated_before_cancel and image.get("halo_generated_texture")
+]
+assert len(fallback_images) == 1
+assert not fallback_images[0].get("halo_direct_uv")
 cancel_iterator.close()
 assert {image.name for image in bpy.data.images if image.get("halo_generated_texture")} == generated_before_cancel
 assert set(conversion_parent.children) == children_before_cancel
+source_nodes.remove(source_mapping)
+source_links.new(source_texcoord.outputs["UV"], source_image_node.inputs["Vector"])
 assert bpy.ops.halo.convert_mesh(
     source_object=source_object.name,
     texture_resolution=32,
     apply_modifiers=True,
     edge_padding=2,
     merge_coplanar=True,
+    direct_uv_sampling=True,
 ) == {"FINISHED"}
 converted_wrapper = bpy.context.active_object
 assert converted_wrapper.get("halo_role") == "group"
@@ -158,6 +188,7 @@ assert vertical_normal.dot(Vector((1.0, 0.0, 0.0))) > 0.99999, vertical_normal
 converted_image = next(node.image for node in converted_primitive.data.materials[0].node_tree.nodes if node.bl_idname == "ShaderNodeTexImage")
 assert converted_image.get("halo_texture_id") == converted_primitive.halo_node.texture
 assert converted_image.get("halo_generated_texture") is True
+assert converted_image.get("halo_direct_uv") is True
 assert converted_image.packed_file is not None
 # Conversion is copy-on-write: the imported source pack remains untouched.
 assert resolve_texture_path(converted_primitive.halo_node.texture, scene.halo_project.pack_root) is None
@@ -197,14 +228,25 @@ padding_visible = [
 assert len(padding_visible) == 25
 assert set(padding_visible) == {(0.2, 0.7, 0.4, 1.0)}
 vertical_image = next(node.image for node in vertical_primitive.data.materials[0].node_tree.nodes if node.bl_idname == "ShaderNodeTexImage")
+assert vertical_image.get("halo_direct_uv") is True
 vertical_pixels = list(vertical_image.pixels)
 center_offset = ((int(vertical_image.size[1]) // 2) * int(vertical_image.size[0]) + int(vertical_image.size[0]) // 2) * 4
 assert vertical_pixels[center_offset + 2] > vertical_pixels[center_offset] * 2.0
 conversion_zip = cache_root / "mesh-conversion-export.zip"
+manifest_before_missing_description_test = scene.halo_project.manifest_json
+manifest_without_description = json.loads(manifest_before_missing_description_test)
+manifest_without_description.setdefault("pack", {}).pop("description", None)
+manifest_without_description["unknown_meta_test"] = {"keep": True}
+scene.halo_project.manifest_json = json.dumps(manifest_without_description, ensure_ascii=False, indent=2)
 blender_scene.export_pack_from_scene(scene, conversion_zip, zip_output=True, overwrite=True)
 namespace, relative_texture = converted_primitive.halo_node.texture.split(":", 1)
 with zipfile.ZipFile(conversion_zip, "r") as archive:
     assert f"assets/{namespace}/{relative_texture}" in archive.namelist()
+    repaired_manifest = json.loads(archive.read("pack.mcmeta"))
+    assert repaired_manifest["pack"]["pack_format"] == 15
+    assert repaired_manifest["pack"]["description"] == "Halo Pack Editor export"
+    assert repaired_manifest["unknown_meta_test"] == {"keep": True}
+scene.halo_project.manifest_json = manifest_before_missing_description_test
 conversion_zip.unlink()
 mesh_conversion_blend = cache_root / "mesh-conversion.blend"
 bpy.ops.wm.save_as_mainfile(filepath=str(mesh_conversion_blend))
