@@ -589,8 +589,9 @@ if bpy is not None:
         _SCENE_VIEW_QUATERNIONS.clear()
         for scene in bpy.data.scenes:
             try:
-                from .blender_scene import enforce_managed_transform_locks, update_preview_roots
+                from .blender_scene import ensure_source_roots, enforce_managed_transform_locks, update_preview_roots
                 from .materials import refresh_halo_material_settings
+                ensure_source_roots(scene)
                 enforce_managed_transform_locks(scene, restore=True)
                 refresh_halo_material_settings()
                 # Rebuild the non-animated anchor pose before evaluating files

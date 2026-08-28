@@ -1,15 +1,15 @@
-# Halo Pack Editor 0.2.9 测试报告
+# Halo Pack Editor 0.3.0 测试报告
 
 测试日期：2026-08-28
 宿主：Blender 5.2.0 LTS（`fbe6228777e7`）  
-交付包：`dist/halo_pack_editor-0.2.9.zip`
-SHA-256：`A809B70C75CAAEE9395DCF0B7B99C09EF31351BE85CC6DE01C73B1750234DDC4`
+交付包：`dist/halo_pack_editor-0.3.0.zip`
+SHA-256：`EE803A3CEA1D85B11ECEC9AF132030D2279E2A20EDB003B6FC3AF0381BAB90FB`
 
 ## 自动化结果
 
-- 纯 Python：17 项测试全部通过。覆盖未知 JSON 字段与旧式写法保留、ZIP 安全、原子导出、资源路径与 PNG/labPBR、坐标矩阵、YXZ 旋转、动画函数、继承、过渡补值/反演/缓动和 `degrees` 行程。
+- 纯 Python：18 项测试全部通过。覆盖未知 JSON 字段与旧式写法保留、ZIP 安全、原子导出、资源路径与 PNG/labPBR、坐标矩阵、YXZ 旋转、动画函数、继承、过渡补值/反演/缓动和 `degrees` 行程。
 - Blender Extension：源码 manifest 校验、ZIP 构建、构建包校验均通过。
-- 全新安装：在 `F:\codex-cache\halo-blender-addon\isolated-0.2.9-20260828-final` 完全隔离的 Blender 配置与扩展目录中执行 `extension install-file --enable`；确认从隔离扩展路径加载，动画播放操作器及新的 `face_camera` 每帧更新入口均已注册。
+- 全新安装：在 `F:\codex-cache\halo-blender-addon\isolated-0.3.0-20260828-final5` 完全隔离的 Blender 配置、脚本、数据和扩展目录中执行 `extension install-file --enable`；确认扩展从隔离路径加载，来源集合、来源索引、来源/光环清除操作器和 Definition 可见性属性均已注册；新建项目的本地编辑缓存写入该隔离 Blender 用户数据目录。
 - Hina：导入 57 个组、29 个图元、至少四层结构；检查 Billboard 法线/UV、Ring 表面数与剔除、材质 Alpha 乘法节点；场景同步、ZIP 往返、原子文件夹往返、保存 `.blend` 与重新打开均通过。
 - Shiroko：startup 与 `id_overrides` 在 Blender 时间轴求值无错误，`degrees` 字段由核心求值器验收；从真实常驻动画通道读取既有项，并通过逐行操作器完成新增、编辑、排序与删除测试。
 - 动画 JSON 编辑：成功把 startup 打开为 Blender Text 数据块，在多行 Text Editor 中修改并通过侧栏操作器重新解析、应用；无效 JSON 会阻止应用并报告错误。
@@ -49,6 +49,8 @@ SHA-256：`A809B70C75CAAEE9395DCF0B7B99C09EF31351BE85CC6DE01C73B1750234DDC4`
 - 0.2.7 当前光环图元总数：Hina 导入后按当前定义统计为 29；Mesh 转换临时新增两个 Billboard 后实时变为 31；删除转换层级后恢复 29。计数基于当前场景与定义 ID，不污染 JSON。
 - 0.2.8 同父级批量编辑：在临时组下创建两个子组和两个图元；混选一个组和一个图元后批量复制，断言生成两个同父级、全新 UUID 的独立副本，再批量删除并恢复原子树。两个同级组一起移动到 Hina 既有组并移回时持续保持多选；两个同组图元迁移后进入同一个属性副本组且索引为 0/1。另断言跨父级复制、组/图元混选移动均整体拒绝，所有原对象父级不变；清理后 Hina 恢复 57 组/29 图元。
 - 0.2.9 动画期间 `face_camera`：为 Billboard 父组注入每秒 45 度的常驻旋转，在两个相隔帧确认父组世界旋转确实变化；同时缓存一个固定 3D 视图四元数，并在每帧动画求值后断言 Billboard 世界朝向始终与该视图一致。
+- 0.3.0 多来源合并：后台构造一个文件夹包和一个 ZIP 包，二者包含相同 `demo:halo` ID、相同纹理资源 ID 但不同 PNG，以及各自未知文件。文件夹导入后断言编辑根位于 Blender 用户数据缓存且源目录字节不变；连续导入后定义自动成为 `demo:halo`/`demo:halo_2`、两图元使用各自来源图片；清空 ZIP 缓存路径后确认能从原 ZIP 重新安全解包并重绑材质；再次新建重名光环得到 `_3` 并绑定独立“本地编辑资源”。合并导出后核心解析取得三个定义、两个来源未知文件及本地缓存文件；清除 `_3` 后导出确认定义不会复活，清除文件夹来源后只剩 ZIP 来源的 `_2` 定义与资源。另验证嵌套 definition 路径在导出清理范围内。
+- 0.3.0 可见性与场景隔离：关闭第一个定义的预览可见性后，断言其 Root/Group/Primitive 全部同时设置视图与渲染隐藏，第二个定义及另一个 Blender Scene 中同 ID 对象不受影响；清除来源后第二场景对象仍存在。重新开启后完整恢复，导出的三个定义均不含 `visible` 字段。
 
 ## 人工验收边界
 

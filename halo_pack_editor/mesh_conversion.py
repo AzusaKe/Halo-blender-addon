@@ -744,10 +744,10 @@ def iter_mesh_conversion(
     if parent is None or parent.get("halo_role") not in {blender_scene.ROOT_ROLE, blender_scene.GROUP_ROLE}:
         raise ValueError("请选择光环根或部件组作为目标父级")
     project = context.scene.halo_project
-    pack_root = str(project.pack_root or "")
+    definition_id = str(parent.get("halo_definition_id", ""))
+    pack_root = str(blender_scene.definition_pack_root(context.scene, definition_id) or "")
     if not pack_root:
         raise ValueError("当前项目没有资源包工作目录")
-    definition_id = str(parent.get("halo_definition_id", ""))
     namespace = definition_id.split(":", 1)[0] if ":" in definition_id else "minecraft"
     token = uuid.uuid4().hex[:8]
     resource_folder = f"textures/halo/mesh_bakes/{_safe_resource_component(source_obj.name)}_{token}"

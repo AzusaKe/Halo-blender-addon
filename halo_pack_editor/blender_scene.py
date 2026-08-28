@@ -17,7 +17,7 @@ import shutil
 import tempfile
 import uuid
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
 try:
@@ -240,6 +240,26 @@ def _safe_extract(source: str, destination: str) -> None:
                 shutil.copyfileobj(source_stream, target_stream)
 
 
+def _new_edit_root(prefix: str = "halo_pack_edit_") -> str:
+    """Create a writable cache that can survive reopening a saved .blend."""
+
+    cache_parent = None
+    if bpy is not None:
+        try:
+            cache_parent = bpy.utils.user_resource(
+                "DATAFILES", path="halo_pack_editor/cache", create=True
+            )
+        except (AttributeError, OSError, RuntimeError):
+            cache_parent = None
+    return tempfile.mkdtemp(prefix=prefix, dir=cache_parent or None)
+
+
+def _copy_folder_to_edit_root(source: str) -> str:
+    destination = _new_edit_root("halo_pack_folder_")
+    shutil.copytree(source, destination, dirs_exist_ok=True)
+    return destination
+
+
 def read_pack(path: str | os.PathLike[str]) -> dict[str, Any]:
     """Read a ZIP or unpacked resource pack into import-ready dictionaries."""
 
@@ -261,9 +281,14 @@ def read_pack(path: str | os.PathLike[str]) -> dict[str, Any]:
     temporary = None
     root = source
     if zipfile.is_zipfile(source):
-        temporary = tempfile.mkdtemp(prefix="halo_pack_import_")
+        temporary = _new_edit_root("halo_pack_import_")
         _safe_extract(source, temporary)
         root = temporary
+    elif os.path.isdir(source):
+        temporary = _copy_folder_to_edit_root(source)
+        root = temporary
+    else:
+        raise ValueError("资源包必须是 ZIP 文件或解包目录")
     root_path = Path(root)
     manifest_path = root_path / "pack.mcmeta"
     if core_project is not None and isinstance(getattr(core_project, "pack_mcmeta", None), Mapping):
@@ -296,7 +321,7 @@ def read_pack(path: str | os.PathLike[str]) -> dict[str, Any]:
     # supplied by core are not duplicated.
     known_source_paths = {str(item.get("source_path", "")).replace("\\", "/") for item in definitions}
     if definitions_root.is_dir():
-        for file_path in sorted(definitions_root.glob("*/halo_definitions/*.json")):
+        for file_path in sorted(definitions_root.glob("*/halo_definitions/**/*.json")):
             relative = file_path.relative_to(root_path).as_posix()
             if relative in known_source_paths:
                 continue
@@ -319,10 +344,14 @@ def read_pack(path: str | os.PathLike[str]) -> dict[str, Any]:
 
 
 def _ensure_collection(scene):
-    collection = bpy.data.collections.get(COLLECTION_NAME)
+    collection = next((
+        child for child in scene.collection.children
+        if child.get("halo_editor_collection") or child.name == COLLECTION_NAME
+    ), None)
     if collection is None:
         collection = bpy.data.collections.new(COLLECTION_NAME)
-    if collection.name not in {child.name for child in scene.collection.children}:
+        collection["halo_editor_collection"] = True
+        collection["halo_preview_scene"] = scene.name
         scene.collection.children.link(collection)
     return collection
 
@@ -332,6 +361,110 @@ def _project_definition(scene, definition_id: str):
     if project is None:
         return None
     return next((item for item in project.definitions if item.definition_id == definition_id), None)
+
+
+def unique_definition_id(scene, requested_id: str) -> str:
+    """Return an unused resource ID, suffixing only the in-memory copy."""
+
+    requested_id = str(requested_id or "minecraft:halo").strip() or "minecraft:halo"
+    if ":" not in requested_id:
+        requested_id = "minecraft:" + requested_id
+    used = {item.definition_id for item in scene.halo_project.definitions}
+    if requested_id not in used:
+        return requested_id
+    namespace, path = requested_id.split(":", 1)
+    index = 2
+    while f"{namespace}:{path}_{index}" in used:
+        index += 1
+    return f"{namespace}:{path}_{index}"
+
+
+def ensure_local_source(scene):
+    """Return the writable source used by newly authored definitions/assets."""
+
+    project = scene.halo_project
+    source = next((entry for entry in getattr(project, "sources", ()) if entry.source_kind == "LOCAL"), None)
+    if source is None:
+        source = project.sources.add()
+        source.source_id = uuid.uuid4().hex
+        source.name = "本地编辑资源"
+        source.source_kind = "LOCAL"
+        source.source_path = ""
+        source.definition_count = 0
+    if not source.pack_root or not os.path.isdir(source.pack_root):
+        source.pack_root = _new_edit_root()
+    return source
+
+
+def definition_pack_root(scene, definition_id: str) -> str:
+    """Resolve the editable resource root associated with one definition."""
+
+    project = getattr(scene, "halo_project", None)
+    if project is None:
+        return ""
+    item = _project_definition(scene, definition_id)
+    source_id = str(getattr(item, "source_id", "") or "") if item is not None else ""
+    if source_id:
+        source = next((entry for entry in getattr(project, "sources", ()) if entry.source_id == source_id), None)
+        if source is not None:
+            if source.pack_root and os.path.isdir(source.pack_root):
+                return source.pack_root
+    root = next((
+        obj for obj in scene.objects
+        if obj.get("halo_role") == ROOT_ROLE and obj.get("halo_definition_id") == definition_id
+    ), None) if bpy is not None else None
+    if root is not None and root.get("halo_pack_root") and os.path.isdir(root.get("halo_pack_root")):
+        return str(root.get("halo_pack_root"))
+    return str(getattr(project, "pack_root", "") or "")
+
+
+def ensure_source_roots(scene) -> int:
+    """Rebuild missing editable caches after reopening a .blend file."""
+
+    project = getattr(scene, "halo_project", None)
+    if project is None:
+        return 0
+    refreshed: dict[str, str] = {}
+    for source in getattr(project, "sources", ()):
+        if source.pack_root and os.path.isdir(source.pack_root):
+            continue
+        source_path = str(source.source_path or "")
+        if source.source_kind == "LOCAL":
+            source.pack_root = _new_edit_root()
+            refreshed[source.source_id] = source.pack_root
+        elif source.source_kind == "FOLDER" and os.path.isdir(source_path):
+            source.pack_root = _copy_folder_to_edit_root(source_path)
+            refreshed[source.source_id] = source.pack_root
+        elif source.source_kind == "ZIP" and os.path.isfile(source_path) and zipfile.is_zipfile(source_path):
+            temporary = _new_edit_root("halo_pack_import_")
+            _safe_extract(source_path, temporary)
+            source.pack_root = temporary
+            refreshed[source.source_id] = temporary
+    if not refreshed:
+        return 0
+    for obj in scene.objects:
+        source_id = str(obj.get("halo_source_id", "") or "")
+        if obj.get("halo_role") == ROOT_ROLE and source_id in refreshed:
+            obj["halo_pack_root"] = refreshed[source_id]
+    for obj in scene.objects:
+        if obj.get("halo_role") != PRIMITIVE_ROLE:
+            continue
+        item = _project_definition(scene, obj.get("halo_definition_id", ""))
+        if item is None or str(getattr(item, "source_id", "") or "") not in refreshed:
+            continue
+        node = getattr(obj, "halo_node", None)
+        if node is None:
+            continue
+        group_node = getattr(getattr(obj, "parent", None), "halo_node", None)
+        glowing = bool(group_node.glowing) if group_node is not None else True
+        assign_primitive_materials(
+            obj,
+            node.texture,
+            node.inner_texture or None,
+            definition_pack_root(scene, obj.get("halo_definition_id", "")),
+            glowing=glowing,
+        )
+    return len(refreshed)
 
 
 def _store_node_props(obj, raw: Mapping[str, Any], definition_id: str, role: str, node_uuid: str, primitive=None):
@@ -422,7 +555,7 @@ def reset_primitive_transform(obj):
 def enforce_managed_transform_locks(scene, restore: bool = True):
     """Apply panel-owned transform policy to imported and reopened objects."""
 
-    for obj in bpy.data.objects:
+    for obj in scene.objects:
         role = obj.get("halo_role")
         if role not in {ROOT_ROLE, GROUP_ROLE, PRIMITIVE_ROLE}:
             continue
@@ -462,8 +595,8 @@ def _make_primitive(collection, group_obj, primitive: Mapping[str, Any], definit
     primitive_uuid = _deterministic_uuid(definition_id, path)
     _store_node_props(obj, primitive, definition_id, PRIMITIVE_ROLE, primitive_uuid, primitive)
     obj["halo_primitive_index"] = int(path.rsplit("/", 1)[-1]) if path.rsplit("/", 1)[-1].isdigit() else 0
-    project = getattr(bpy.context.scene, "halo_project", None)
-    pack_root = getattr(project, "pack_root", "") if project is not None else ""
+    scene = getattr(bpy.context, "scene", None)
+    pack_root = definition_pack_root(scene, definition_id) if scene is not None else ""
     assign_primitive_materials(obj, texture, inner_texture or None, pack_root, glowing=glowing)
     return obj
 
@@ -497,8 +630,9 @@ def _make_group(collection, parent, raw: Mapping[str, Any], definition_id: str, 
     return obj
 
 
-def _remove_definition_objects(definition_id: str):
-    for obj in list(bpy.data.objects):
+def _remove_definition_objects(definition_id: str, scene=None):
+    objects = scene.objects if scene is not None else bpy.data.objects
+    for obj in list(objects):
         if obj.get("halo_definition_id") == definition_id:
             bpy.data.objects.remove(obj, do_unlink=True)
 
@@ -509,7 +643,14 @@ def _remove_head_preview(scene):
             bpy.data.objects.remove(obj, do_unlink=True)
 
 
-def _create_definition_pg(scene, definition_id: str, raw: Mapping[str, Any], source_path: str = "", error: str = ""):
+def _create_definition_pg(
+    scene,
+    definition_id: str,
+    raw: Mapping[str, Any],
+    source_path: str = "",
+    error: str = "",
+    source_id: str = "",
+):
     project = scene.halo_project
     item = _project_definition(scene, definition_id)
     if item is None:
@@ -517,6 +658,8 @@ def _create_definition_pg(scene, definition_id: str, raw: Mapping[str, Any], sou
     item.definition_id = definition_id
     item.namespace = _namespace(definition_id)
     item.source_path = source_path
+    item.source_id = source_id
+    item.visible = True
     item.raw_json = json.dumps(dict(raw), ensure_ascii=False, indent=2)
     item.schema_version = str(raw.get("version", project.schema_version or "1.0.10"))
     item.orientation_mode = str(raw.get("orientation_mode", "locked")).lower()
@@ -543,20 +686,35 @@ def _create_definition_pg(scene, definition_id: str, raw: Mapping[str, Any], sou
     return item
 
 
-def import_definition_to_scene(scene, definition: Mapping[str, Any], replace: bool = True):
+def import_definition_to_scene(
+    scene,
+    definition: Mapping[str, Any],
+    replace: bool = True,
+    *,
+    source_id: str = "",
+    pack_root: str = "",
+):
     """Create a root/group/primitive object tree for one definition."""
 
     definition_id = str(definition.get("id") or _definition_id(definition.get("raw", {}), "minecraft:halo"))
     raw = normalise_definition(definition.get("raw", {}), definition_id)
     collection = _ensure_collection(scene)
     if replace:
-        _remove_definition_objects(definition_id)
-    item = _create_definition_pg(scene, definition_id, raw, str(definition.get("source_path", "")), str(definition.get("error", "")))
+        _remove_definition_objects(definition_id, scene)
+    item = _create_definition_pg(
+        scene,
+        definition_id,
+        raw,
+        str(definition.get("source_path", "")),
+        str(definition.get("error", "")),
+        source_id,
+    )
     root = _new_empty(collection, _safe_name(f"Halo · {definition_id}"), ROOT_ROLE)
     root["halo_definition_id"] = definition_id
     root["halo_uuid"] = _deterministic_uuid(definition_id, "root")
     root["halo_raw_json"] = json.dumps(raw, ensure_ascii=False, indent=2)
-    root["halo_pack_root"] = scene.halo_project.pack_root
+    root["halo_pack_root"] = pack_root or definition_pack_root(scene, definition_id)
+    root["halo_source_id"] = source_id
     root["halo_source_path"] = str(definition.get("source_path", ""))
     root["halo_positioning_offset"] = _vec(raw.get("positioning", {}).get("offset") if isinstance(raw.get("positioning"), Mapping) else None, 3, (0, 0, 0))
     root["halo_positioning_scale"] = float(raw.get("positioning", {}).get("scale", 1.0) if isinstance(raw.get("positioning"), Mapping) else 1.0)
@@ -578,7 +736,7 @@ def import_definition_to_scene(scene, definition: Mapping[str, Any], replace: bo
     return root
 
 
-def import_project_to_scene(context, path: str | os.PathLike[str], replace: bool = True) -> dict[str, Any]:
+def import_project_to_scene(context, path: str | os.PathLike[str], replace: bool = False) -> dict[str, Any]:
     """Load a complete pack and populate the active Blender scene."""
 
     scene = context.scene
@@ -586,23 +744,140 @@ def import_project_to_scene(context, path: str | os.PathLike[str], replace: bool
     if data.get("core_project") is not None:
         _CORE_PROJECTS[scene.name] = data["core_project"]
     project = scene.halo_project
-    project.source_path = data["source_path"]
-    project.pack_root = data["root"]
-    project.manifest_json = json.dumps(data["manifest"], ensure_ascii=False, indent=2)
-    project.schema_version = str(data["manifest"].get("halo_schema", "1.0.10")) if isinstance(data["manifest"], Mapping) else "1.0.10"
+    had_existing_project = bool(project.definitions) or bool(getattr(project, "sources", ()))
     if replace:
         project.definitions.clear()
+        project.sources.clear()
         # Remove only objects managed by this addon; user objects remain intact.
-        for obj in list(bpy.data.objects):
+        for obj in list(scene.objects):
             if obj.get("halo_role") in {ROOT_ROLE, GROUP_ROLE, PRIMITIVE_ROLE}:
                 bpy.data.objects.remove(obj, do_unlink=True)
+    elif not project.sources and project.definitions and project.source_path:
+        # Upgrade a .blend saved by the former single-source editor before
+        # appending the next pack.  This keeps its resources in the merge.
+        legacy = project.sources.add()
+        legacy.source_id = uuid.uuid4().hex
+        legacy.source_path = project.source_path
+        legacy.pack_root = project.pack_root
+        if project.source_path and zipfile.is_zipfile(project.source_path):
+            legacy.source_kind = "ZIP"
+        elif project.source_path and os.path.isdir(project.source_path):
+            legacy.source_kind = "FOLDER"
+        else:
+            legacy.source_kind = "LOCAL"
+        legacy.name = (Path(project.source_path).stem if legacy.source_kind == "ZIP" else Path(project.source_path or project.pack_root).name) or "旧项目来源"
+        legacy.definition_count = len(project.definitions)
+        for item in project.definitions:
+            item.source_id = legacy.source_id
+        for obj in scene.objects:
+            if obj.get("halo_role") == ROOT_ROLE and obj.get("halo_definition_id"):
+                obj["halo_source_id"] = legacy.source_id
+    source = project.sources.add()
+    source.source_id = uuid.uuid4().hex
+    source.source_path = data["source_path"]
+    source.pack_root = data["root"]
+    source.source_kind = "ZIP" if zipfile.is_zipfile(data["source_path"]) else "FOLDER"
+    source.name = Path(data["source_path"]).stem if source.source_kind == "ZIP" else Path(data["source_path"]).name
+    source.definition_count = len(data["definitions"])
+    project.active_source_index = len(project.sources) - 1
+    project.source_path = data["source_path"]
+    project.pack_root = data["root"]
+    if replace or not had_existing_project:
+        project.manifest_json = json.dumps(data["manifest"], ensure_ascii=False, indent=2)
+        project.schema_version = str(data["manifest"].get("halo_schema", "1.0.10")) if isinstance(data["manifest"], Mapping) else "1.0.10"
     imported = 0
+    renamed = []
     for definition in data["definitions"]:
-        import_definition_to_scene(scene, definition, replace=False)
+        requested_id = str(definition.get("id") or "minecraft:halo")
+        definition_id = unique_definition_id(scene, requested_id)
+        imported_definition = dict(definition)
+        imported_raw = _json_copy(dict(definition.get("raw", {})))
+        if definition_id != requested_id:
+            imported_raw["id"] = definition_id
+            relative = str(definition.get("source_path", "")).replace("\\", "/")
+            if relative.startswith("assets/") and relative.lower().endswith(".json"):
+                imported_definition["source_path"] = str(PurePosixPath(relative).with_name(_safe_name(definition_id.split(":", 1)[-1]) + ".json"))
+            renamed.append({"from": requested_id, "to": definition_id})
+        imported_definition["id"] = definition_id
+        imported_definition["raw"] = imported_raw
+        import_definition_to_scene(
+            scene,
+            imported_definition,
+            replace=False,
+            source_id=source.source_id,
+            pack_root=data["root"],
+        )
         imported += 1
     if imported == 0:
         project.validation_json = json.dumps({"errors": ["未找到 assets/*/halo_definitions/*.json"]}, ensure_ascii=False)
+    data["renamed_definitions"] = renamed
+    data["source_id"] = source.source_id
     return data
+
+
+def _refresh_source_counts(project) -> None:
+    counts: dict[str, int] = {}
+    for item in project.definitions:
+        source_id = str(getattr(item, "source_id", "") or "")
+        if source_id:
+            counts[source_id] = counts.get(source_id, 0) + 1
+    for source in project.sources:
+        source.definition_count = counts.get(source.source_id, 0)
+
+
+def remove_definition_from_scene(scene, index: int) -> str:
+    """Remove one definition and its object tree while retaining its source."""
+
+    project = scene.halo_project
+    if index < 0 or index >= len(project.definitions):
+        raise IndexError("光环索引无效")
+    definition_id = project.definitions[index].definition_id
+    _remove_definition_objects(definition_id, scene)
+    project.definitions.remove(index)
+    _refresh_source_counts(project)
+    if project.definitions:
+        project.active_definition_index = min(index, len(project.definitions) - 1)
+        project.active_definition = project.definitions[project.active_definition_index].definition_id
+    else:
+        project.active_definition_index = 0
+        project.active_definition = ""
+        project.active_uuid = ""
+    return definition_id
+
+
+def remove_source_from_scene(scene, index: int) -> tuple[str, list[str]]:
+    """Remove a ZIP/folder source and every definition imported from it."""
+
+    project = scene.halo_project
+    if index < 0 or index >= len(project.sources):
+        raise IndexError("资源包来源索引无效")
+    source = project.sources[index]
+    source_id = source.source_id
+    source_name = source.name or Path(source.source_path).name
+    removed_ids = [item.definition_id for item in project.definitions if item.source_id == source_id]
+    for definition_id in removed_ids:
+        _remove_definition_objects(definition_id, scene)
+    for definition_index in reversed(range(len(project.definitions))):
+        if project.definitions[definition_index].source_id == source_id:
+            project.definitions.remove(definition_index)
+    project.sources.remove(index)
+    project.active_source_index = min(index, max(0, len(project.sources) - 1))
+    _refresh_source_counts(project)
+    if project.definitions:
+        project.active_definition_index = min(project.active_definition_index, len(project.definitions) - 1)
+        project.active_definition = project.definitions[project.active_definition_index].definition_id
+    else:
+        project.active_definition_index = 0
+        project.active_definition = ""
+        project.active_uuid = ""
+    if project.sources:
+        active_source = project.sources[project.active_source_index]
+        project.source_path = active_source.source_path
+        project.pack_root = active_source.pack_root
+    else:
+        project.source_path = ""
+        project.pack_root = ""
+    return source_name, removed_ids
 
 
 def _raw_from_object(obj) -> dict[str, Any]:
@@ -704,7 +979,7 @@ def sync_definition_from_scene(scene, definition_id: str) -> dict[str, Any] | No
 
     item = _project_definition(scene, definition_id)
     root_uuid = getattr(item, "root_uuid", "") if item is not None else ""
-    root = next((obj for obj in bpy.data.objects if obj.get("halo_role") == ROOT_ROLE and (
+    root = next((obj for obj in scene.objects if obj.get("halo_role") == ROOT_ROLE and (
         obj.get("halo_definition_id") == definition_id or (root_uuid and obj.get("halo_uuid") == root_uuid)
     )), None)
     if root is None:
@@ -714,7 +989,7 @@ def sync_definition_from_scene(scene, definition_id: str) -> dict[str, Any] | No
         old_definition_id = str(root.get("halo_definition_id", definition_id))
         new_definition_id = str(item.definition_id or definition_id)
         if new_definition_id != old_definition_id:
-            for obj in bpy.data.objects:
+            for obj in scene.objects:
                 if obj.get("halo_definition_id") == old_definition_id:
                     obj["halo_definition_id"] = new_definition_id
                     if getattr(obj, "halo_node", None) is not None:
@@ -884,7 +1159,7 @@ def update_preview_roots(scene):
 
     if bpy is None or getattr(scene, "halo_project", None) is None:
         return
-    for root in bpy.data.objects:
+    for root in scene.objects:
         if root.get("halo_role") == ROOT_ROLE:
             _root_positioning(scene, root)
     if scene.halo_project.preview_space == "MC_HEAD" and scene.halo_project.show_head:
@@ -900,6 +1175,26 @@ def update_preview_roots(scene):
             head.color = (0.15, 0.45, 0.9, 0.22)
     else:
         _remove_head_preview(scene)
+    apply_definition_visibility(scene)
+
+
+def apply_definition_visibility(scene) -> None:
+    """Reapply editor-only visibility after import, load, or preview refresh."""
+
+    if bpy is None or getattr(scene, "halo_project", None) is None:
+        return
+    visibility = {item.definition_id: bool(getattr(item, "visible", True)) for item in scene.halo_project.definitions}
+    for obj in scene.objects:
+        definition_id = obj.get("halo_definition_id", "")
+        if definition_id not in visibility:
+            continue
+        hidden = not visibility[definition_id]
+        obj.hide_viewport = hidden
+        obj.hide_render = hidden
+        try:
+            obj.hide_set(hidden)
+        except (RuntimeError, TypeError):
+            pass
 
 
 def _copy_tree_to_temp(source_root: str | None, destination: str):
@@ -912,6 +1207,39 @@ def _copy_tree_to_temp(source_root: str | None, destination: str):
                 shutil.copy2(child, target)
     else:
         (Path(destination) / "assets").mkdir(parents=True, exist_ok=True)
+
+
+def _copy_project_sources_to_temp(scene, destination: str) -> None:
+    """Merge every retained ZIP/folder source into one export staging tree."""
+
+    project = scene.halo_project
+    sources = getattr(project, "sources", ())
+    if not sources:
+        _copy_tree_to_temp(getattr(project, "pack_root", ""), destination)
+        return
+    for source in sources:
+        cached_root = str(source.pack_root or "")
+        if cached_root and os.path.isdir(cached_root):
+            _copy_tree_to_temp(cached_root, destination)
+            continue
+        source_path = str(source.source_path or "")
+        if source.source_kind == "FOLDER" and os.path.isdir(source_path):
+            _copy_tree_to_temp(source_path, destination)
+        elif source.source_kind == "ZIP" and os.path.isfile(source_path) and zipfile.is_zipfile(source_path):
+            _safe_extract(source_path, destination)
+        else:
+            raise FileNotFoundError(f"资源包来源不可用：{source.name or source_path}")
+
+
+def _remove_staged_definition_files(destination: Path) -> None:
+    """Prevent deleted/renamed source definitions from returning on export."""
+
+    assets = destination / "assets"
+    if not assets.is_dir():
+        return
+    for definition_path in assets.glob("*/halo_definitions/**/*.json"):
+        if definition_path.is_file():
+            definition_path.unlink()
 
 
 def _definition_output_path(destination: Path, item, definition_id: str) -> Path:
@@ -931,13 +1259,13 @@ def _definition_output_path(destination: Path, item, definition_id: str) -> Path
     return candidate
 
 
-def _write_generated_textures(destination: Path):
+def _write_generated_textures(scene, destination: Path):
     """Materialize packed Mesh-conversion images only in the export staging tree."""
 
     from .materials import split_resource_id
 
     referenced_ids: set[str] = set()
-    for obj in bpy.data.objects:
+    for obj in scene.objects:
         if obj.get("halo_role") != PRIMITIVE_ROLE:
             continue
         node = getattr(obj, "halo_node", None)
@@ -975,7 +1303,7 @@ def export_pack_from_scene(scene, target_path: str | os.PathLike[str], zip_outpu
     """Export the current scene into a folder or ZIP using an atomic temp tree."""
 
     hierarchy_errors = []
-    for obj in bpy.data.objects:
+    for obj in scene.objects:
         role = obj.get("halo_role")
         if role == GROUP_ROLE:
             if obj.parent is None or obj.parent.get("halo_role") not in {ROOT_ROLE, GROUP_ROLE}:
@@ -992,8 +1320,15 @@ def export_pack_from_scene(scene, target_path: str | os.PathLike[str], zip_outpu
     if hierarchy_errors:
         raise ValueError("导出前验证失败：" + "；".join(hierarchy_errors[:8]))
     target = Path(target_path).expanduser().resolve()
-    source = Path(scene.halo_project.source_path).resolve() if getattr(scene, "halo_project", None) and scene.halo_project.source_path else None
-    if source == target:
+    source_paths = {
+        Path(value).expanduser().resolve()
+        for value in [
+            scene.halo_project.source_path,
+            *(entry.source_path for entry in getattr(scene.halo_project, "sources", ())),
+        ]
+        if value
+    }
+    if target in source_paths:
         raise ValueError("导出路径不能覆盖导入源；请选择新的路径")
     if zip_output is None:
         zip_output = target.suffix.lower() == ".zip"
@@ -1002,8 +1337,9 @@ def export_pack_from_scene(scene, target_path: str | os.PathLike[str], zip_outpu
     # Keep staging on the target volume so the final rename is atomic.
     temporary = Path(tempfile.mkdtemp(prefix=".halo_pack_export_", dir=str(target.parent)))
     try:
-        _copy_tree_to_temp(getattr(scene.halo_project, "pack_root", ""), str(temporary))
-        _write_generated_textures(temporary)
+        _copy_project_sources_to_temp(scene, str(temporary))
+        _remove_staged_definition_files(temporary)
+        _write_generated_textures(scene, temporary)
         manifest = _json_copy(DEFAULT_MANIFEST)
         try:
             parsed_manifest = json.loads(scene.halo_project.manifest_json or "{}")
@@ -1013,6 +1349,7 @@ def export_pack_from_scene(scene, target_path: str | os.PathLike[str], zip_outpu
             pass
         manifest = _complete_manifest(manifest)
         (temporary / "pack.mcmeta").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        used_definition_paths: set[Path] = set()
         for item in scene.halo_project.definitions:
             raw = raw_definitions.get(item.definition_id)
             if raw is None:
@@ -1021,12 +1358,16 @@ def export_pack_from_scene(scene, target_path: str | os.PathLike[str], zip_outpu
                 except (TypeError, ValueError):
                     continue
             path = _definition_output_path(temporary, item, item.definition_id)
+            if path in used_definition_paths:
+                namespace, name = item.definition_id.split(":", 1) if ":" in item.definition_id else ("minecraft", item.definition_id)
+                path = temporary / "assets" / namespace / "halo_definitions" / (_safe_name(name) + ".json")
+                suffix = 2
+                while path in used_definition_paths:
+                    path = temporary / "assets" / namespace / "halo_definitions" / f"{_safe_name(name)}_{suffix}.json"
+                    suffix += 1
+                path.parent.mkdir(parents=True, exist_ok=True)
+            used_definition_paths.add(path)
             path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            source_relative = str(item.source_path or "").replace("\\", "/").lstrip("/")
-            if source_relative and source_relative != path.relative_to(temporary).as_posix() and ".." not in Path(source_relative).parts:
-                stale = temporary / Path(*source_relative.split("/"))
-                if stale.is_file() and str(stale).startswith(str(temporary)):
-                    stale.unlink()
         if zip_output:
             target.parent.mkdir(parents=True, exist_ok=True)
             temp_zip = Path(tempfile.mktemp(prefix="halo_pack_", suffix=".zip", dir=str(target.parent)))
@@ -1126,13 +1467,19 @@ __all__ = [
     "COLLECTION_NAME",
     "normalise_definition",
     "read_pack",
+    "unique_definition_id",
+    "definition_pack_root",
+    "ensure_source_roots",
     "import_project_to_scene",
     "import_definition_to_scene",
+    "remove_definition_from_scene",
+    "remove_source_from_scene",
     "sync_definition_from_scene",
     "sync_all_definitions",
     "reset_primitive_transform",
     "enforce_managed_transform_locks",
     "update_preview_roots",
+    "apply_definition_visibility",
     "export_pack_from_scene",
     "object_by_uuid",
     "reparent_object",

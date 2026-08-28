@@ -5,6 +5,7 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 ## 功能
 
 - 导入或导出资源包 ZIP、解包目录，以及包含多个命名空间和光环的整包。
+- 连续导入多个 ZIP/文件夹并合并为一个编辑项目；同 ID 光环自动给后来者添加数字后缀，来源与单个光环均可独立清除。
 - 使用 Blender Outliner 编辑与模组一致的组/图元父子树。
 - 精确生成 billboard 与带内外表面的 ring，解析 Minecraft 资源路径和 PNG 透明材质。
 - 提供 EEVEE 与 Cycles 一致性预览：抖动透明避免透明像素遮挡后方图元；显式内外纹理 Ring 使用单层双面预览，消除共面冲突和 Cycles 间接发光。
@@ -20,15 +21,16 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 
 1. 使用 Blender 5.2 LTS 或更新版本。
 2. 打开“编辑 → 偏好设置 → 扩展”，选择“从磁盘安装”。
-3. 选择 `halo_pack_editor-0.2.9.zip` 并启用扩展。
+3. 选择 `halo_pack_editor-0.3.0.zip` 并启用扩展。
 4. 在 3D 视图按 `N`，打开“Halo 光环”标签页。
 
 ## 基本工作流
 
-1. 在“项目”面板选择“导入资源包 ZIP”或“导入资源包文件夹”。
+1. 在“项目”面板选择“导入资源包 ZIP”或“导入资源包文件夹”。导入会追加到当前项目，不再清除已有来源和光环；可连续加入任意数量的 ZIP/文件夹。扩展先把每个来源复制/解包到 Blender 用户数据目录中的独立编辑缓存，贴图重链接和 Mesh 转换不会写回磁盘源包。新建光环归入“本地编辑资源”缓存。“资源包来源”列表中的“清除所选来源”会移除该来源及其光环，“清除光环”只移除定义列表中的当前光环，两者都不会修改磁盘源文件。若新导入或新建的 ID 已存在，后来者自动改为 `_2`、`_3` 等并显示警告。
 2. 在中文 Blender 的“大纲视图”（默认布局右上角的对象树）中选择光环根、部件组或图元；3D 视图右侧栏中的属性面板会切换到对应编辑内容。若没有看到右侧栏，把鼠标移到 3D 视图后按 `N`，再点击右侧竖排的“Halo 光环”标签。
    - 在“光环属性”中修改 Definition ID 会原子更新当前选择、完整对象树、原始 JSON 与导出 ID；重命名后无需重新选择或重新导入。空 ID 和重复 ID 会被拒绝。
    - “光环属性”会显示当前定义完整层级中的图元总数；新增、删除、复制、迁移或 Mesh 转换后会随场景实时更新。
+   - 定义列表右侧的眼睛图标和“光环属性 → 在预览中显示”可单独控制每个光环的 Blender 预览/渲染可见性；该编辑器状态不会写入 Halo JSON。
    - 静态 JSON 变换以侧栏面板为唯一数据源。受管理的 Root、Group 和 Primitive 会锁定 Blender 原生 G/R/S，防止产生无法保存或错误回写的临时状态。
    - 选择部件组或 Billboard/Ring 图元时，可使用“粗调/细调”以及各轴的 `−/+` 控件编辑所属组的位置、YXZ 旋转和统一缩放；步长可分别设置。
    - 同组多个图元按照 Halo JSON 语义共享所属组变换。
@@ -55,7 +57,7 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
    - “边缘扩张圈数”控制在面轮廓外增加多少圈像素，范围 0–64、默认 2。新增像素逐圈精确复制相邻采样点的 RGBA，不做平均或颜色插值；原面内部已采样像素始终保持不变。
    - “合并共面相邻面”默认开启：同材质、同朝向、位于同一平面且共享边的面会合并成一个面簇，共用一张较大的贴图、一个子组和一个 Billboard。每个源面的原始 UV 仍独立采样，内部共享边不会再产生透明缝隙。不同材质、反向法线及相距较远的共面面不会合并。
    - 点击确认后转换以逐面簇模态任务运行。“Mesh 转子组”面板会显示持续更新的进度条、当前面簇和取消按钮，Blender 状态栏也会显示进度；可以切换工作区或其他程序。由于 Blender/Cycles 烘焙只能在主线程执行，单张贴图正在烘焙的短时间内仍不能中断，取消会在当前面簇结束后生效。
-9. 在“验证与导出”中先运行验证，再导出 ZIP 或文件夹。
+9. 在“验证与导出”中先运行验证，再导出 ZIP 或文件夹。输出会合并来源列表中所有仍保留的资源和当前光环列表；已清除的定义不会从来源包中重新出现。多个来源若含相同非定义资源路径，后导入来源覆盖先导入来源。
 
 导入不会修改原资源包。导出默认拒绝覆盖已存在目标；需要覆盖时必须显式启用。
 导出的 `pack.mcmeta` 始终包含 `pack.pack_format` 和非空的 `pack.description`；缺少描述时自动补为 `Halo Pack Editor export`，已有自定义描述和未知元数据保持不变。
@@ -79,7 +81,7 @@ JSON 会统一输出为 UTF-8、两空格缩进；不保证原始空白逐字节
 ```powershell
 python -m unittest discover -s tests -p 'test_*.py' -v
 blender --command extension validate halo_pack_editor
-blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.2.9.zip
+blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.3.0.zip
 ```
 
 Blender 后台集成测试脚本位于 `scripts/`。测试与下载缓存应放在 `F:\codex-cache\halo-blender-addon`，扩展自身不会依赖该路径。

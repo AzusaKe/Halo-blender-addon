@@ -99,6 +99,16 @@ if bpy is not None:
         row.prop(node, "scale", text="")
         _nudge_button(row, "scale", 0, 1, "+")
 
+    class HALO_UL_sources(UIList):
+        bl_idname = "HALO_UL_sources"
+
+        def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+            row = layout.row(align=True)
+            icon_name = "PACKAGE" if item.source_kind == "ZIP" else "FILE_FOLDER" if item.source_kind == "FOLDER" else "GREASEPENCIL"
+            row.label(text=item.name or "未命名来源", icon=icon_name)
+            row.label(text=f"{item.definition_count} 个光环")
+
+
     class HALO_UL_definitions(UIList):
         bl_idname = "HALO_UL_definitions"
 
@@ -108,6 +118,13 @@ if bpy is not None:
             row.label(text=item.definition_id or "未命名光环", icon=icon_name)
             if item.schema_version:
                 row.label(text=item.schema_version)
+            row.prop(
+                item,
+                "visible",
+                text="",
+                icon="HIDE_OFF" if item.visible else "HIDE_ON",
+                emboss=False,
+            )
 
 
     class HALO_PT_project(Panel):
@@ -125,13 +142,23 @@ if bpy is not None:
             row.operator("halo.import_pack", text="导入 ZIP", icon="IMPORT")
             row.operator("halo.import_folder", text="导入文件夹", icon="FILE_FOLDER")
             box = layout.box()
-            box.label(text="资源包")
-            box.prop(project, "pack_root", text="当前目录")
-            box.prop(project, "source_path", text="导入源")
+            box.label(text="资源包来源（ZIP / 文件夹 / 本地编辑）")
+            box.template_list("HALO_UL_sources", "sources", project, "sources", project, "active_source_index", rows=3)
+            source_row = box.row(align=True)
+            source_row.operator("halo.remove_source", text="清除所选来源", icon="TRASH")
+            source_row.enabled = bool(project.sources)
+            if project.sources and 0 <= project.active_source_index < len(project.sources):
+                source = project.sources[project.active_source_index]
+                box.label(text=source.source_path, icon="FILE_FOLDER")
+            box.label(text="合并包元数据")
             box.prop(project, "manifest_json", text="pack.mcmeta")
             layout.template_list("HALO_UL_definitions", "definitions", project, "definitions", project, "active_definition_index", rows=3)
             row = layout.row(align=True)
             row.operator("halo.new_definition", text="新建光环", icon="ADD")
+            remove = row.row(align=True)
+            remove.enabled = bool(project.definitions)
+            remove.operator("halo.remove_definition", text="清除光环", icon="TRASH")
+            row = layout.row(align=True)
             row.operator("halo.open_raw_json", text="打开 JSON", icon="TEXT")
             row.operator("halo.apply_raw_json", text="应用 JSON", icon="FILE_REFRESH")
             layout.label(text="组的父子关系：见下方“树形编辑”面板", icon="INFO")
@@ -157,6 +184,7 @@ if bpy is not None:
                 layout.label(text="请选择一个光环定义")
                 return
             layout.prop(item, "definition_id", text="ID")
+            layout.prop(item, "visible", text="在预览中显示")
             error = context.scene.halo_project.get("halo_definition_id_error", "")
             if error:
                 layout.label(text=error, icon="ERROR")
@@ -672,6 +700,7 @@ if bpy is not None:
 
 
     PANEL_CLASSES = (
+        HALO_UL_sources,
         HALO_UL_definitions,
         HALO_PT_project,
         HALO_PT_definition,

@@ -594,7 +594,7 @@ def _set_node_mesh(obj):
     if old_mesh and old_mesh.users == 0:
         bpy.data.meshes.remove(old_mesh)
     blender_scene.reset_primitive_transform(obj)
-    pack_root = getattr(bpy.context.scene.halo_project, "pack_root", "")
+    pack_root = blender_scene.definition_pack_root(bpy.context.scene, obj.get("halo_definition_id", ""))
     group_node = getattr(obj.parent, "halo_node", None) if obj.parent is not None else None
     glowing = bool(group_node.glowing) if group_node is not None else True
     assign_primitive_materials(obj, node.texture, node.inner_texture or None, pack_root, glowing=glowing)
@@ -707,14 +707,18 @@ if bpy is not None:
 
         def execute(self, context):
             project = context.scene.halo_project
-            for obj in list(bpy.data.objects):
+            for obj in list(context.scene.objects):
                 if obj.get("halo_role") in {ROOT_ROLE, GROUP_ROLE, PRIMITIVE_ROLE, HEAD_ROLE}:
                     bpy.data.objects.remove(obj, do_unlink=True)
             project.definitions.clear()
+            project.sources.clear()
             project.source_path = ""
             project.pack_root = ""
             project.manifest_json = json.dumps(blender_scene.DEFAULT_MANIFEST, ensure_ascii=False, indent=2)
             project.active_definition = ""
+            local_source = blender_scene.ensure_local_source(context.scene)
+            project.pack_root = local_source.pack_root
+            project.active_source_index = 0
             if self.with_default_halo:
                 raw = {
                     "id": "minecraft:halo",
@@ -730,7 +734,18 @@ if bpy is not None:
                     "animation": {},
                     "positioning": {"offset": [0.0, 0.0, 0.0], "scale": 1.0},
                 }
-                import_definition_to_scene(context.scene, {"id": raw["id"], "raw": raw}, replace=False)
+                import_definition_to_scene(
+                    context.scene,
+                    {
+                        "id": raw["id"],
+                        "raw": raw,
+                        "source_path": "assets/minecraft/halo_definitions/halo.json",
+                    },
+                    replace=False,
+                    source_id=local_source.source_id,
+                    pack_root=local_source.pack_root,
+                )
+                blender_scene._refresh_source_counts(project)
             self.report({"INFO"}, "已建立空白 Halo 资源包项目")
             return {"FINISHED"}
 
@@ -746,9 +761,10 @@ if bpy is not None:
             return context.window_manager.invoke_props_dialog(self)
 
         def execute(self, context):
-            definition_id = self.definition_id.strip() or "minecraft:new_halo"
-            if ":" not in definition_id:
-                definition_id = "minecraft:" + definition_id
+            requested_id = self.definition_id.strip() or "minecraft:new_halo"
+            definition_id = blender_scene.unique_definition_id(context.scene, requested_id)
+            local_source = blender_scene.ensure_local_source(context.scene)
+            namespace, path = definition_id.split(":", 1)
             raw = {
                 "id": definition_id,
                 "version": "1.0.10",
@@ -757,8 +773,22 @@ if bpy is not None:
                 "animation": {},
                 "positioning": {"offset": [0.0, 0.0, 0.0], "scale": 1.0},
             }
-            import_definition_to_scene(context.scene, {"id": definition_id, "raw": raw}, replace=False)
-            self.report({"INFO"}, f"已创建 {definition_id}")
+            import_definition_to_scene(
+                context.scene,
+                {
+                    "id": definition_id,
+                    "raw": raw,
+                    "source_path": f"assets/{namespace}/halo_definitions/{blender_scene._safe_name(path)}.json",
+                },
+                replace=False,
+                source_id=local_source.source_id,
+                pack_root=local_source.pack_root,
+            )
+            blender_scene._refresh_source_counts(context.scene.halo_project)
+            if definition_id != (requested_id if ":" in requested_id else "minecraft:" + requested_id):
+                self.report({"WARNING"}, f"光环 ID 已存在，已将新光环重命名为 {definition_id}")
+            else:
+                self.report({"INFO"}, f"已创建 {definition_id}")
             return {"FINISHED"}
 
 
@@ -768,15 +798,20 @@ if bpy is not None:
         bl_options = {"REGISTER", "UNDO"}
         filename_ext = ".zip"
         filter_glob: StringProperty(default="*.zip;*.mcpack;*.json", options={"HIDDEN"})
-        replace_scene: BoolProperty(name="替换当前项目", default=True)
+        replace_scene: BoolProperty(name="替换当前项目", default=False, options={"HIDDEN"})
 
         def execute(self, context):
             try:
-                import_project_to_scene(context, self.filepath, self.replace_scene)
+                result = import_project_to_scene(context, self.filepath, self.replace_scene)
             except Exception as exc:
                 self.report({"ERROR"}, f"导入失败: {exc}")
                 return {"CANCELLED"}
-            self.report({"INFO"}, f"已导入 Halo 资源包: {self.filepath}")
+            renames = result.get("renamed_definitions", [])
+            if renames:
+                summary = "，".join(f"{item['from']} → {item['to']}" for item in renames[:4])
+                self.report({"WARNING"}, f"发现重名光环，已自动重命名：{summary}")
+            else:
+                self.report({"INFO"}, f"已追加 Halo 资源包: {self.filepath}")
             return {"FINISHED"}
 
 
@@ -786,7 +821,7 @@ if bpy is not None:
         bl_options = {"REGISTER", "UNDO"}
 
         directory: StringProperty(name="资源包文件夹", subtype="DIR_PATH")
-        replace_scene: BoolProperty(name="替换当前项目", default=True)
+        replace_scene: BoolProperty(name="替换当前项目", default=False, options={"HIDDEN"})
 
         def invoke(self, context, event):
             context.window_manager.fileselect_add(self)
@@ -794,11 +829,56 @@ if bpy is not None:
 
         def execute(self, context):
             try:
-                import_project_to_scene(context, self.directory, self.replace_scene)
+                result = import_project_to_scene(context, self.directory, self.replace_scene)
             except Exception as exc:
                 self.report({"ERROR"}, f"导入失败: {exc}")
                 return {"CANCELLED"}
-            self.report({"INFO"}, "已导入资源包文件夹")
+            renames = result.get("renamed_definitions", [])
+            if renames:
+                summary = "，".join(f"{item['from']} → {item['to']}" for item in renames[:4])
+                self.report({"WARNING"}, f"发现重名光环，已自动重命名：{summary}")
+            else:
+                self.report({"INFO"}, "已追加资源包文件夹")
+            return {"FINISHED"}
+
+
+    class HALO_OT_remove_source(bpy.types.Operator):
+        bl_idname = "halo.remove_source"
+        bl_label = "清除资源包来源"
+        bl_description = "移除此 ZIP/文件夹缓存以及从中导入的全部光环；不会删除磁盘源文件"
+        bl_options = {"REGISTER", "UNDO"}
+
+        def invoke(self, context, event):
+            return context.window_manager.invoke_confirm(self, event)
+
+        def execute(self, context):
+            project = context.scene.halo_project
+            try:
+                source_name, removed = blender_scene.remove_source_from_scene(context.scene, project.active_source_index)
+            except Exception as exc:
+                self.report({"ERROR"}, f"清除来源失败：{exc}")
+                return {"CANCELLED"}
+            self.report({"INFO"}, f"已清除来源 {source_name} 及其 {len(removed)} 个光环；磁盘源文件未修改")
+            return {"FINISHED"}
+
+
+    class HALO_OT_remove_definition(bpy.types.Operator):
+        bl_idname = "halo.remove_definition"
+        bl_label = "清除光环"
+        bl_description = "从当前合并项目移除所选光环；不会修改其磁盘来源"
+        bl_options = {"REGISTER", "UNDO"}
+
+        def invoke(self, context, event):
+            return context.window_manager.invoke_confirm(self, event)
+
+        def execute(self, context):
+            project = context.scene.halo_project
+            try:
+                definition_id = blender_scene.remove_definition_from_scene(context.scene, project.active_definition_index)
+            except Exception as exc:
+                self.report({"ERROR"}, f"清除光环失败：{exc}")
+                return {"CANCELLED"}
+            self.report({"INFO"}, f"已从合并项目清除 {definition_id}；磁盘源文件未修改")
             return {"FINISHED"}
 
 
@@ -1578,7 +1658,7 @@ if bpy is not None:
                 self.report({"ERROR"}, "只有 Ring 图元支持独立内侧纹理")
                 return {"CANCELLED"}
             project = context.scene.halo_project
-            pack_root = project.pack_root
+            pack_root = blender_scene.definition_pack_root(context.scene, obj.get("halo_definition_id", ""))
             if not pack_root or not os.path.isdir(pack_root):
                 pack_root = tempfile.mkdtemp(prefix="halo_pack_edit_")
                 project.pack_root = pack_root
@@ -2390,6 +2470,8 @@ if bpy is not None:
         HALO_OT_new_definition,
         HALO_OT_import_pack,
         HALO_OT_import_folder,
+        HALO_OT_remove_source,
+        HALO_OT_remove_definition,
         HALO_OT_export_pack,
         HALO_OT_export_zip,
         HALO_OT_add_group,

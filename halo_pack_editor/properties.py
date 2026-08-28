@@ -99,7 +99,8 @@ def _transition_group_items(self, context):
         return _TRANSITION_GROUP_ITEMS_CACHE
     definition_id = str(getattr(self, "active_definition", ""))
     seen = set()
-    for obj in bpy.data.objects:
+    scene = getattr(context, "scene", None)
+    for obj in (scene.objects if scene is not None else bpy.data.objects):
         if obj.get("halo_role") != "group" or obj.get("halo_definition_id") != definition_id:
             continue
         node = getattr(obj, "halo_node", None)
@@ -136,8 +137,9 @@ def _definition_id_update(self, context):
     project = getattr(scene, "halo_project", None)
     root_uuid = str(getattr(self, "root_uuid", ""))
     root_hint = None
+    scene_objects = scene.objects if scene is not None else ()
     if bpy is not None and root_uuid:
-        root_hint = next((obj for obj in bpy.data.objects if obj.get("halo_uuid") == root_uuid), None)
+        root_hint = next((obj for obj in scene_objects if obj.get("halo_uuid") == root_uuid), None)
         if not old_id and root_hint is not None:
             old_id = str(root_hint.get("halo_definition_id", ""))
     if not new_id:
@@ -179,7 +181,7 @@ def _definition_id_update(self, context):
         return
     root = root_hint
     if root is None and old_id:
-        root = next((obj for obj in bpy.data.objects if obj.get("halo_role") == "definition_root" and obj.get("halo_definition_id") == old_id), None)
+        root = next((obj for obj in scene_objects if obj.get("halo_role") == "definition_root" and obj.get("halo_definition_id") == old_id), None)
     scene_old_id = str(root.get("halo_definition_id", old_id)) if root is not None else old_id
     if root is not None:
         try:
@@ -191,16 +193,13 @@ def _definition_id_update(self, context):
             root["halo_raw_json"] = json.dumps(root_raw, ensure_ascii=False, indent=2)
         root.name = f"Halo · {new_id}"
     if scene_old_id:
-        for obj in bpy.data.objects:
+        for obj in scene_objects:
             if obj.get("halo_definition_id") != scene_old_id:
                 continue
             obj["halo_definition_id"] = new_id
             node = getattr(obj, "halo_node", None)
             if node is not None:
                 node.definition_id = new_id
-        for text in bpy.data.texts:
-            if text.get("halo_definition_id") == scene_old_id:
-                text["halo_definition_id"] = new_id
     if project is not None:
         selected_index = int(getattr(project, "active_definition_index", -1))
         selected_item = project.definitions[selected_index] if 0 <= selected_index < len(project.definitions) else None
@@ -236,7 +235,8 @@ def _definition_damping_update(self, context):
         self.raw_json = json.dumps(raw, ensure_ascii=False, indent=2)
 
         if bpy is not None:
-            for obj in bpy.data.objects:
+            scene = getattr(self, "id_data", None)
+            for obj in (scene.objects if scene is not None else bpy.data.objects):
                 if obj.get("halo_role") != "definition_root":
                     continue
                 if self.root_uuid and obj.get("halo_uuid") != self.root_uuid:
@@ -258,6 +258,29 @@ def _definition_damping_update(self, context):
                 break
     finally:
         self.pop("halo_damping_update_guard", None)
+
+
+def _definition_visibility_update(self, context):
+    """Show or hide every preview object belonging to one definition."""
+
+    if bpy is None:
+        return
+    visible = bool(getattr(self, "visible", True))
+    definition_id = str(getattr(self, "definition_id", ""))
+    root_uuid = str(getattr(self, "root_uuid", ""))
+    scene = getattr(self, "id_data", None)
+    for obj in (scene.objects if scene is not None else bpy.data.objects):
+        belongs = obj.get("halo_definition_id") == definition_id
+        if root_uuid and obj.get("halo_role") == "definition_root":
+            belongs = obj.get("halo_uuid") == root_uuid
+        if not belongs:
+            continue
+        obj.hide_viewport = not visible
+        obj.hide_render = not visible
+        try:
+            obj.hide_set(not visible)
+        except (RuntimeError, TypeError):
+            pass
 
 
 def _node_transform_update(self, context):
@@ -371,6 +394,22 @@ def _primitive_face_camera_update(self, context):
 
 if bpy is not None:
 
+    class HaloPackSourcePG(bpy.types.PropertyGroup):
+        source_id: StringProperty(name="来源 ID", default="", options={"HIDDEN"})
+        name: StringProperty(name="名称", default="资源包")
+        source_kind: EnumProperty(
+            name="类型",
+            items=(
+                ("ZIP", "ZIP", "压缩资源包"),
+                ("FOLDER", "文件夹", "解包资源包目录"),
+                ("LOCAL", "本地编辑", "新建光环和导入贴图使用的独立工作缓存"),
+            ),
+            default="ZIP",
+        )
+        source_path: StringProperty(name="来源路径", default="", subtype="FILE_PATH")
+        pack_root: StringProperty(name="缓存目录", default="", subtype="DIR_PATH", options={"HIDDEN"})
+        definition_count: IntProperty(name="光环数", default=0, min=0)
+
     class HaloAnimationTermPG(bpy.types.PropertyGroup):
         function: EnumProperty(name="函数", items=FUNCTION_ITEMS, default="sin")
         amplitude: FloatProperty(name="A", default=0.0)
@@ -445,6 +484,8 @@ if bpy is not None:
         definition_id: StringProperty(name="Definition ID", default="", update=_definition_id_update)
         namespace: StringProperty(name="命名空间", default="minecraft")
         source_path: StringProperty(name="JSON 文件", default="", subtype="FILE_PATH")
+        source_id: StringProperty(name="资源包来源", default="", options={"HIDDEN"})
+        visible: BoolProperty(name="在预览中显示", default=True, update=_definition_visibility_update)
         raw_json: StringProperty(name="完整 JSON", default="", options={"HIDDEN"})
         schema_version: StringProperty(name="Schema", default="1.0.10")
         orientation_mode: EnumProperty(
@@ -501,6 +542,7 @@ if bpy is not None:
         output_path: StringProperty(name="导出路径", default="", subtype="FILE_PATH")
         active_definition: StringProperty(name="当前光环", default="")
         active_definition_index: IntProperty(name="当前光环索引", default=0, min=0, options={"HIDDEN"}, update=_active_definition_index_update)
+        active_source_index: IntProperty(name="当前来源索引", default=0, min=0, options={"HIDDEN"})
         active_uuid: StringProperty(name="当前部件", default="")
         preview_space: EnumProperty(name="预览坐标系", items=PREVIEW_SPACE_ITEMS, default="HALO_LOCAL", update=_scene_preview_update)
         preview_mode: EnumProperty(name="动画模式", items=PREVIEW_MODE_ITEMS, default="IDLE")
@@ -547,9 +589,11 @@ if bpy is not None:
             name="请求取消 Mesh 转换", default=False, options={"HIDDEN", "SKIP_SAVE"},
         )
         definitions: CollectionProperty(type=HaloDefinitionPG)
+        sources: CollectionProperty(type=HaloPackSourcePG)
 
 
     PROPERTY_CLASSES = (
+        HaloPackSourcePG,
         HaloAnimationTermPG,
         HaloTransitionPropertyPG,
         HaloTransitionSegmentPG,
@@ -559,6 +603,9 @@ if bpy is not None:
     )
 
 else:  # pragma: no cover - enables importing source for py_compile/documentation
+    class HaloPackSourcePG:  # type: ignore[no-redef]
+        pass
+
     class HaloAnimationTermPG:  # type: ignore[no-redef]
         pass
 
@@ -609,6 +656,7 @@ __all__ = [
     "PREVIEW_SPACE_ITEMS",
     "PREVIEW_MODE_ITEMS",
     "PROPERTY_CLASSES",
+    "HaloPackSourcePG",
     "HaloAnimationTermPG",
     "HaloTransitionPropertyPG",
     "HaloTransitionSegmentPG",

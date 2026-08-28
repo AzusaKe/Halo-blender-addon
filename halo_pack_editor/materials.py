@@ -8,6 +8,7 @@ the same way.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 from pathlib import Path
@@ -259,8 +260,13 @@ def refresh_halo_material_settings():
 
         old_mesh = obj.data
         obj.data = ring_mesh(obj.name, node.size, node.segments, False)
-        project = getattr(getattr(bpy.context, "scene", None), "halo_project", None)
-        pack_root = getattr(project, "pack_root", "") if project is not None else ""
+        scene = getattr(bpy.context, "scene", None)
+        try:
+            from .blender_scene import definition_pack_root
+            pack_root = definition_pack_root(scene, obj.get("halo_definition_id", "")) if scene is not None else ""
+        except Exception:
+            project = getattr(scene, "halo_project", None)
+            pack_root = getattr(project, "pack_root", "") if project is not None else ""
         group_node = getattr(getattr(obj, "parent", None), "halo_node", None)
         glowing = bool(group_node.glowing) if group_node is not None else True
         assign_primitive_materials(obj, node.texture, node.inner_texture, pack_root, glowing=glowing)
@@ -296,10 +302,15 @@ def load_texture_image(texture_id: str, pack_root: str | os.PathLike[str] | None
     import bpy
 
     # Generated Mesh-conversion textures may be packed in the .blend instead
-    # of being written into the imported source pack.  Resolve them by resource
-    # ID before consulting the source filesystem.
+    # of being written into an imported source pack.  Source-backed images,
+    # however, must be matched by resolved path: two merged packs may legally
+    # use the same resource ID for different PNG files.
     for image in bpy.data.images:
-        if image.get("halo_texture_id") == texture_id and not image.get("halo_missing_texture"):
+        if (
+            image.get("halo_texture_id") == texture_id
+            and image.get("halo_generated_texture")
+            and not image.get("halo_missing_texture")
+        ):
             return image
     path = resolve_texture_path(texture_id, pack_root)
     if path:
@@ -339,7 +350,8 @@ def create_halo_material(
     # Include glow in the key so toggling one group does not mutate another
     # group's shader unexpectedly.
     paired = f";back={backface_texture_id}" if backface_texture_id else ""
-    key = f"{material_name} [{'glow' if glowing else 'flat'};{'culled' if backface_culling else 'double'}{paired}]"
+    source_token = hashlib.sha1(os.path.normcase(os.path.abspath(str(pack_root or ""))).encode("utf-8")).hexdigest()[:10]
+    key = f"{material_name} [{'glow' if glowing else 'flat'};{'culled' if backface_culling else 'double'}{paired};src={source_token}]"
     material = bpy.data.materials.get(key) or bpy.data.materials.new(key)
     material.use_nodes = True
     _set_blend_mode(material)
