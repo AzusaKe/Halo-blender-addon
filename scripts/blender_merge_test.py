@@ -154,6 +154,9 @@ blender_scene.export_pack_from_scene(scene, merged_zip, zip_output=True)
 merged = import_pack(merged_zip)
 assert {item.identifier for item in merged.definitions} == {"demo:halo", "demo:halo_2", "demo:halo_3"}
 assert merged.pack_mcmeta["pack"]["description"] == "edited aggregate"
+assert merged.pack_mcmeta["pack"]["supported_formats"] == {"min_inclusive": 15, "max_inclusive": 88}
+assert merged.pack_mcmeta["pack"]["min_format"] == [15, 0]
+assert merged.pack_mcmeta["pack"]["max_format"] == [88, 0]
 assert "folder.txt" in merged.files and "zip.txt" in merged.files
 assert "local-only.txt" in merged.files
 assert all("visible" not in item.document.data for item in merged.definitions)

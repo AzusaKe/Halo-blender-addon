@@ -42,6 +42,9 @@ except ImportError:  # Direct script/test import.
 
 
 PACK_FORMAT = 15
+MIN_PACK_FORMAT = [15, 0]
+MAX_PACK_FORMAT = [88, 0]
+SUPPORTED_PACK_FORMATS = {"min_inclusive": 15, "max_inclusive": 88}
 DEFAULT_PACK_DESCRIPTION = "Halo Pack Editor export"
 SCHEMA_VERSION = "1.0.10"
 PBR_SUFFIXES = ("_n", "_s", "_e")
@@ -57,6 +60,9 @@ def _complete_pack_mcmeta(value: Mapping[str, Any] | None) -> dict[str, Any]:
     source_pack = metadata.get("pack")
     pack = clone_ast(dict(source_pack)) if isinstance(source_pack, Mapping) else {}
     pack.setdefault("pack_format", PACK_FORMAT)
+    pack.setdefault("supported_formats", clone_ast(SUPPORTED_PACK_FORMATS))
+    pack.setdefault("min_format", clone_ast(MIN_PACK_FORMAT))
+    pack.setdefault("max_format", clone_ast(MAX_PACK_FORMAT))
     description = pack.get("description")
     if description is None or (isinstance(description, str) and not description.strip()):
         pack["description"] = DEFAULT_PACK_DESCRIPTION
@@ -380,7 +386,9 @@ def new_project(
 ) -> PackProject:
     """Create a new empty pack with the current default pack metadata."""
 
-    metadata = {"pack": {"pack_format": int(pack_format), "description": description}}
+    metadata = _complete_pack_mcmeta({
+        "pack": {"pack_format": int(pack_format), "description": description},
+    })
     return PackProject(pack_mcmeta=metadata, pack_mcmeta_document=JsonDocument(clone_ast(metadata)))
 
 
@@ -1288,6 +1296,9 @@ def export_pack(project: PackProject | Any, target: str | Path, *, overwrite: bo
 
 __all__ = [
     "PACK_FORMAT",
+    "MIN_PACK_FORMAT",
+    "MAX_PACK_FORMAT",
+    "SUPPORTED_PACK_FORMATS",
     "SCHEMA_VERSION",
     "PBR_SUFFIXES",
     "PackIOError",

@@ -41,6 +41,9 @@ from .models import (
 
 
 DEFAULT_PACK_DESCRIPTION = "Halo Pack Editor export"
+DEFAULT_SUPPORTED_FORMATS = {"min_inclusive": 15, "max_inclusive": 88}
+DEFAULT_MIN_FORMAT = [15, 0]
+DEFAULT_MAX_FORMAT = [88, 0]
 
 
 def _complete_pack_meta(value: Mapping[str, Any] | None, *, pack_format: int = 15) -> dict[str, Any]:
@@ -48,6 +51,9 @@ def _complete_pack_meta(value: Mapping[str, Any] | None, *, pack_format: int = 1
     source_pack = metadata.get("pack")
     pack = clone_json(dict(source_pack)) if isinstance(source_pack, Mapping) else {}
     pack.setdefault("pack_format", pack_format)
+    pack.setdefault("supported_formats", clone_json(DEFAULT_SUPPORTED_FORMATS))
+    pack.setdefault("min_format", clone_json(DEFAULT_MIN_FORMAT))
+    pack.setdefault("max_format", clone_json(DEFAULT_MAX_FORMAT))
     description = pack.get("description")
     if description is None or (isinstance(description, str) and not description.strip()):
         pack["description"] = DEFAULT_PACK_DESCRIPTION
@@ -528,7 +534,9 @@ def write_pack(
 
 
 def new_project(*, pack_format: int = 15, description: str = DEFAULT_PACK_DESCRIPTION) -> PackProject:
-    return PackProject(pack_meta={"pack": {"pack_format": pack_format, "description": description}})
+    return PackProject(pack_meta=_complete_pack_meta({
+        "pack": {"pack_format": pack_format, "description": description},
+    }, pack_format=pack_format))
 
 
 def new_definition(

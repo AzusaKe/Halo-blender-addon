@@ -174,6 +174,12 @@ class PackIOTests(unittest.TestCase):
             export_folder(project, repaired)
             repaired_meta = json.loads((repaired / "pack.mcmeta").read_text(encoding="utf-8"))
             self.assertEqual(repaired_meta["pack"]["pack_format"], 15)
+            self.assertEqual(repaired_meta["pack"]["supported_formats"], {
+                "min_inclusive": 15,
+                "max_inclusive": 88,
+            })
+            self.assertEqual(repaired_meta["pack"]["min_format"], [15, 0])
+            self.assertEqual(repaired_meta["pack"]["max_format"], [88, 0])
             self.assertEqual(repaired_meta["pack"]["description"], DEFAULT_PACK_DESCRIPTION)
             self.assertEqual(repaired_meta["unknown_meta"], {"keep": True})
 

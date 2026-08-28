@@ -2,7 +2,7 @@
 
 - Blender：最低 5.2.0 LTS，不设置最高版本。
 - Halo definition schema：类型化支持 1.0.10；更高版本的未知字段按原始 JSON 保留。
-- Minecraft 资源包：新建包默认 `pack_format = 15`。0.2.6 起，导入显示与导出会在缺失或空白时补齐 `description = "Halo Pack Editor export"`；已有字符串或文本组件描述以及未知元数据保持不变。
+- Minecraft 资源包：0.3.1 起，新建与缺省导出范围为 Java 1.20～26.2。`pack_format = 15` 作为 1.20/1.20.1 的旧版基准；`supported_formats = {min_inclusive: 15, max_inclusive: 88}` 供 1.20.2 至旧元数据格式客户端读取；`min_format = [15,0]`、`max_format = [88,0]` 供资源包格式 65 及以上客户端读取。由于范围跨越格式 65，两套范围字段会同时保留。0.2.6 起，导入显示与导出会在缺失或空白时补齐 `description = "Halo Pack Editor export"`；已有字符串或文本组件描述以及未知元数据保持不变。
 - 图元：`billboard`、`ring`；旧版 `shape` 只保证读取与原样保留。
 - 图元计数：0.2.7 起，“光环属性”按当前定义 ID 实时统计场景中全部受管理的 Billboard 与 Ring；计数只用于编辑信息显示，不写入 JSON。
 - 动画函数：`sin`、`cos`、`linear`。

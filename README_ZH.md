@@ -21,7 +21,7 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 
 1. 使用 Blender 5.2 LTS 或更新版本。
 2. 打开“编辑 → 偏好设置 → 扩展”，选择“从磁盘安装”。
-3. 选择 `halo_pack_editor-0.3.0.zip` 并启用扩展。
+3. 选择 `halo_pack_editor-0.3.1.zip` 并启用扩展。
 4. 在 3D 视图按 `N`，打开“Halo 光环”标签页。
 
 ## 基本工作流
@@ -60,7 +60,7 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 9. 在“验证与导出”中先运行验证，再导出 ZIP 或文件夹。输出会合并来源列表中所有仍保留的资源和当前光环列表；已清除的定义不会从来源包中重新出现。多个来源若含相同非定义资源路径，后导入来源覆盖先导入来源。
 
 导入不会修改原资源包。导出默认拒绝覆盖已存在目标；需要覆盖时必须显式启用。
-导出的 `pack.mcmeta` 始终包含 `pack.pack_format` 和非空的 `pack.description`；缺少描述时自动补为 `Halo Pack Editor export`，已有自定义描述和未知元数据保持不变。
+导出的 `pack.mcmeta` 默认声明 Minecraft Java 1.20～26.2 兼容：`pack_format: 15` 供 1.20/1.20.1 读取，另写入 `supported_formats: 15～88` 以及新版 `min_format: [15,0]`、`max_format: [88,0]`。缺少描述时自动补为 `Halo Pack Editor export`，已有自定义描述和未知元数据保持不变；这些元数据仍可在项目面板中手动编辑。
 
 ## 坐标约定
 
@@ -81,7 +81,7 @@ JSON 会统一输出为 UTF-8、两空格缩进；不保证原始空白逐字节
 ```powershell
 python -m unittest discover -s tests -p 'test_*.py' -v
 blender --command extension validate halo_pack_editor
-blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.3.0.zip
+blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.3.1.zip
 ```
 
 Blender 后台集成测试脚本位于 `scripts/`。测试与下载缓存应放在 `F:\codex-cache\halo-blender-addon`，扩展自身不会依赖该路径。

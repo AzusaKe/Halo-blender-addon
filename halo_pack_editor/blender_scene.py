@@ -46,7 +46,15 @@ GROUP_ROLE = "group"
 PRIMITIVE_ROLE = "primitive"
 HEAD_ROLE = "head_preview"
 DEFAULT_PACK_DESCRIPTION = "Halo Pack Editor export"
-DEFAULT_MANIFEST = {"pack": {"pack_format": 15, "description": DEFAULT_PACK_DESCRIPTION}}
+DEFAULT_MANIFEST = {
+    "pack": {
+        "pack_format": 15,
+        "supported_formats": {"min_inclusive": 15, "max_inclusive": 88},
+        "min_format": [15, 0],
+        "max_format": [88, 0],
+        "description": DEFAULT_PACK_DESCRIPTION,
+    }
+}
 UUID_NAMESPACE = uuid.UUID("f4d8d3c2-2d16-4c04-98cb-5fd8af7e2b64")
 
 # Typed core projects are kept in memory while a Blender scene is open.  The
@@ -67,6 +75,9 @@ def _complete_manifest(value: Any) -> dict[str, Any]:
     source_pack = manifest.get("pack")
     pack = _json_copy(dict(source_pack)) if isinstance(source_pack, Mapping) else {}
     pack.setdefault("pack_format", 15)
+    pack.setdefault("supported_formats", {"min_inclusive": 15, "max_inclusive": 88})
+    pack.setdefault("min_format", [15, 0])
+    pack.setdefault("max_format", [88, 0])
     description = pack.get("description")
     if description is None or (isinstance(description, str) and not description.strip()):
         pack["description"] = DEFAULT_PACK_DESCRIPTION
