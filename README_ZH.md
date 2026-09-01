@@ -21,8 +21,30 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 
 1. 使用 Blender 5.2 LTS 或更新版本。
 2. 打开“编辑 → 偏好设置 → 扩展”，选择“从磁盘安装”。
-3. 选择 `halo_pack_editor-0.3.1.zip` 并启用扩展。
+3. 选择 `halo_pack_editor-0.3.5.zip` 并启用扩展。
 4. 在 3D 视图按 `N`，打开“Halo 光环”标签页。
+
+## 保存工程与修复旧贴图（0.3.2）
+
+- 普通导入/重链接 PNG（包括 Ring 内侧）会立即内嵌到 Blender Image；保存 `.blend` 时自动保存每个来源的资源副本，包括 labPBR、`pack.png`、`.png.mcmeta` 和未知文件。无需再手动“打包资源”，也不依赖系统 Temp。副本会增加 `.blend` 大小及保存耗时。
+- 重新打开时从内嵌副本创建独立的用户数据缓存，预览与导出都能使用；即使原 ZIP/文件夹和旧缓存已移走也可恢复。仅处理 Halo 资源，不会打包场景中其他模型的外部文件。内部 `.halo_resources_*.zip.base64` 文本是资源副本，请勿手动编辑或删除。
+- 旧工程：升级扩展后打开 `.blend`，在 **3D 视图 → N → Halo 光环 → 项目 / 资源包 → 修复并内嵌资源** 操作，然后另存一份 `.blend`。扩展会尝试从原资源包、仍存在的缓存或已打包图片恢复，保留现有组结构与编辑数据。
+- 若原包路径也已失效、图片从未打包且已无像素数据，就无法凭 JSON 还原图片。请先把原 ZIP/文件夹放回记录的位置，再点击修复；也可选择对应图元，使用“导入外侧 PNG / 导入内侧 PNG”重新链接。未恢复项目会在面板与验证结果中显示警告，详情打印到控制台。
+- 0.3.3 起，打开旧工程、保存或手动修复时，会在资源恢复之后自动清理无法恢复的 Halo Temp 图片数据块（含闲置图片）。不会删除磁盘文件、图元、材质节点或 JSON 贴图 ID；使用处改为缺图占位，方便重新链接。已打包、仍有像素数据、磁盘文件仍存在及非 Halo Temp 图片均保留。清理记录显示在项目面板，详细名称打印到控制台。
+- PNG 重复导入：同一来源/命名空间中已有内容相同的图片，会直接复用原资源 ID 和 Image 数据块；已有数字后缀副本或已绑定的不同文件名也可复用。PNG、labPBR 附图及 `.png.mcmeta` 按文件内容比较，不按文件名猜测。只有同名而内容不同才加后缀，避免改动其他图元的材质；不同来源保留独立资源缓存。
+
+## 导出贴图清理（0.3.4）
+
+- ZIP 与文件夹导出均以最终写出的全部光环 JSON 为准，递归检查 `texture`、`outer_texture`、`inner_texture` 引用，包括嵌套组、旧式 `shape` / `primitive`、保留的扩展字段以及隐藏光环。不再因为旧图片还在 Blender、源缓存或 `.blend` 内嵌副本中就导出它。
+- `assets/<namespace>/textures/` 下无引用的 PNG 及其 `.png.mcmeta` 不进入成品包；仍在使用的 PNG 连带保留 `_n/_s/_e` 和各自元数据。空的旧命名空间目录也会从导出副本移除。`pack.png`、`pack.mcmeta` 与其他非贴图文件保持原样保留。
+- 清理只发生在临时导出副本，原包、编辑缓存、Image 和 `.blend` 的资源副本不删除。其他光环仍然引用的共享贴图继续导出。
+
+## 命名空间与贴图迁移（0.3.5）
+
+- 在光环属性中把 `a:b` 改为 `d:b` 时，该光环使用的贴图同步迁移到 `assets/d/`，保留原来的子目录，并更新 JSON、图元面板和预览材质；只改冒号后的名称不迁移贴图。
+- Billboard、Ring 内外贴图、跨命名空间引用、Mesh 烘焙图片和高级 JSON 中的贴图字段均参与迁移。PNG 连同 `_n/_s/_e` 及各自 `.mcmeta` 一起复制，不重新采样图片。
+- 目标位置内容完全相同时复用；重名但内容不同时添加数字后缀并在光环属性里提示，不覆盖已有文件。缺失贴图仍迁移引用和残存附图并提示重新链接，不把别的同名图片当作原图。
+- 只更新当前光环。原包和共享旧图片不改动，编辑缓存保留旧副本；导出时依据最终引用排除多次重命名留下的无用副本。连续重命名及保存重开后同样有效。
 
 ## 基本工作流
 
@@ -81,7 +103,7 @@ JSON 会统一输出为 UTF-8、两空格缩进；不保证原始空白逐字节
 ```powershell
 python -m unittest discover -s tests -p 'test_*.py' -v
 blender --command extension validate halo_pack_editor
-blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.3.1.zip
+blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.3.5.zip
 ```
 
 Blender 后台集成测试脚本位于 `scripts/`。测试与下载缓存应放在 `F:\codex-cache\halo-blender-addon`，扩展自身不会依赖该路径。

@@ -167,8 +167,37 @@ def _definition_id_update(self, context):
             return
         project.pop("halo_definition_id_error", None)
 
+    root = root_hint
+    if bpy is not None and root is None and old_id:
+        root = next((obj for obj in scene_objects if obj.get("halo_role") == "definition_root"
+                     and obj.get("halo_definition_id") == old_id), None)
+    migrated_primitives = []
+    new_namespace = new_id.split(":", 1)[0] if ":" in new_id else "minecraft"
+    old_namespace = old_id.split(":", 1)[0] if ":" in old_id else "minecraft"
+    if root is not None and old_namespace != new_namespace:
+        # RNA has already assigned the new ID. Temporarily expose the old ID
+        # under the recursion guard so cache recovery and scene sync still
+        # resolve exactly this source/definition during copy-on-write migration.
+        self["halo_definition_id_update_guard"] = True
+        try:
+            self.definition_id = old_id
+            from .texture_migration import migrate_definition_textures
+            migrated_primitives, notices = migrate_definition_textures(scene, self, old_id, new_namespace)
+            self.definition_id = new_id
+            if project is not None:
+                project["halo_definition_rename_notices"] = json.dumps(notices, ensure_ascii=False)
+        except Exception as exc:
+            self.definition_id = old_id
+            if project is not None:
+                project["halo_definition_id_error"] = f"贴图迁移失败，已保留原 ID：{exc}"
+            return
+        finally:
+            self.pop("halo_definition_id_update_guard", None)
+    elif project is not None:
+        project.pop("halo_definition_rename_notices", None)
+
     self["halo_previous_definition_id"] = new_id
-    self.namespace = new_id.split(":", 1)[0] if ":" in new_id else (self.namespace or "minecraft")
+    self.namespace = new_namespace
     try:
         raw = json.loads(self.raw_json or "{}")
     except (TypeError, ValueError):
@@ -205,6 +234,13 @@ def _definition_id_update(self, context):
         selected_item = project.definitions[selected_index] if 0 <= selected_index < len(project.definitions) else None
         if project.active_definition in {scene_old_id, old_id, new_id} or selected_item == self:
             project.active_definition = new_id
+    if migrated_primitives:
+        try:
+            from .texture_migration import refresh_migrated_materials
+            refresh_migrated_materials(scene, migrated_primitives)
+        except Exception as exc:
+            if project is not None:
+                project["halo_definition_id_error"] = f"命名空间及贴图已迁移，预览刷新失败：{exc}"
 
 
 def _definition_damping_update(self, context):

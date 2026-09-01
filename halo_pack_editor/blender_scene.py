@@ -230,7 +230,7 @@ def _read_json(path: Path) -> dict[str, Any]:
     return dict(value)
 
 
-def _safe_extract(source: str, destination: str) -> None:
+def _safe_extract(source, destination: str, *, overwrite: bool = True) -> None:
     root = Path(destination).resolve()
     with zipfile.ZipFile(source) as archive:
         for member in archive.infolist():
@@ -246,23 +246,25 @@ def _safe_extract(source: str, destination: str) -> None:
             if member.is_dir():
                 target.mkdir(parents=True, exist_ok=True)
                 continue
+            if not overwrite and target.is_file():
+                continue
             target.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(member) as source_stream, target.open("wb") as target_stream:
                 shutil.copyfileobj(source_stream, target_stream)
 
 
+def edit_cache_parent() -> str:
+    """Persistent runtime storage; never silently fall back to OS Temp."""
+    if bpy is not None:
+        cache_parent = bpy.utils.user_resource("DATAFILES", path="halo_pack_editor/cache", create=True)
+        if cache_parent:
+            return cache_parent
+    raise RuntimeError("无法建立 Blender 用户资源目录；请检查目录写入权限")
+
+
 def _new_edit_root(prefix: str = "halo_pack_edit_") -> str:
     """Create a writable cache that can survive reopening a saved .blend."""
-
-    cache_parent = None
-    if bpy is not None:
-        try:
-            cache_parent = bpy.utils.user_resource(
-                "DATAFILES", path="halo_pack_editor/cache", create=True
-            )
-        except (AttributeError, OSError, RuntimeError):
-            cache_parent = None
-    return tempfile.mkdtemp(prefix=prefix, dir=cache_parent or None)
+    return tempfile.mkdtemp(prefix=prefix, dir=edit_cache_parent())
 
 
 def _copy_folder_to_edit_root(source: str) -> str:
@@ -431,51 +433,8 @@ def definition_pack_root(scene, definition_id: str) -> str:
 
 def ensure_source_roots(scene) -> int:
     """Rebuild missing editable caches after reopening a .blend file."""
-
-    project = getattr(scene, "halo_project", None)
-    if project is None:
-        return 0
-    refreshed: dict[str, str] = {}
-    for source in getattr(project, "sources", ()):
-        if source.pack_root and os.path.isdir(source.pack_root):
-            continue
-        source_path = str(source.source_path or "")
-        if source.source_kind == "LOCAL":
-            source.pack_root = _new_edit_root()
-            refreshed[source.source_id] = source.pack_root
-        elif source.source_kind == "FOLDER" and os.path.isdir(source_path):
-            source.pack_root = _copy_folder_to_edit_root(source_path)
-            refreshed[source.source_id] = source.pack_root
-        elif source.source_kind == "ZIP" and os.path.isfile(source_path) and zipfile.is_zipfile(source_path):
-            temporary = _new_edit_root("halo_pack_import_")
-            _safe_extract(source_path, temporary)
-            source.pack_root = temporary
-            refreshed[source.source_id] = temporary
-    if not refreshed:
-        return 0
-    for obj in scene.objects:
-        source_id = str(obj.get("halo_source_id", "") or "")
-        if obj.get("halo_role") == ROOT_ROLE and source_id in refreshed:
-            obj["halo_pack_root"] = refreshed[source_id]
-    for obj in scene.objects:
-        if obj.get("halo_role") != PRIMITIVE_ROLE:
-            continue
-        item = _project_definition(scene, obj.get("halo_definition_id", ""))
-        if item is None or str(getattr(item, "source_id", "") or "") not in refreshed:
-            continue
-        node = getattr(obj, "halo_node", None)
-        if node is None:
-            continue
-        group_node = getattr(getattr(obj, "parent", None), "halo_node", None)
-        glowing = bool(group_node.glowing) if group_node is not None else True
-        assign_primitive_materials(
-            obj,
-            node.texture,
-            node.inner_texture or None,
-            definition_pack_root(scene, obj.get("halo_definition_id", "")),
-            glowing=glowing,
-        )
-    return len(refreshed)
+    from .resource_store import ensure_resources
+    return ensure_resources(scene)["restored_sources"]
 
 
 def _store_node_props(obj, raw: Mapping[str, Any], definition_id: str, role: str, node_uuid: str, primitive=None):
@@ -763,26 +722,9 @@ def import_project_to_scene(context, path: str | os.PathLike[str], replace: bool
         for obj in list(scene.objects):
             if obj.get("halo_role") in {ROOT_ROLE, GROUP_ROLE, PRIMITIVE_ROLE}:
                 bpy.data.objects.remove(obj, do_unlink=True)
-    elif not project.sources and project.definitions and project.source_path:
-        # Upgrade a .blend saved by the former single-source editor before
-        # appending the next pack.  This keeps its resources in the merge.
-        legacy = project.sources.add()
-        legacy.source_id = uuid.uuid4().hex
-        legacy.source_path = project.source_path
-        legacy.pack_root = project.pack_root
-        if project.source_path and zipfile.is_zipfile(project.source_path):
-            legacy.source_kind = "ZIP"
-        elif project.source_path and os.path.isdir(project.source_path):
-            legacy.source_kind = "FOLDER"
-        else:
-            legacy.source_kind = "LOCAL"
-        legacy.name = (Path(project.source_path).stem if legacy.source_kind == "ZIP" else Path(project.source_path or project.pack_root).name) or "旧项目来源"
-        legacy.definition_count = len(project.definitions)
-        for item in project.definitions:
-            item.source_id = legacy.source_id
-        for obj in scene.objects:
-            if obj.get("halo_role") == ROOT_ROLE and obj.get("halo_definition_id"):
-                obj["halo_source_id"] = legacy.source_id
+    elif project.definitions:
+        from .resource_store import upgrade_legacy_sources
+        upgrade_legacy_sources(scene)
     source = project.sources.add()
     source.source_id = uuid.uuid4().hex
     source.source_path = data["source_path"]
@@ -1270,29 +1212,23 @@ def _definition_output_path(destination: Path, item, definition_id: str) -> Path
     return candidate
 
 
-def _write_generated_textures(scene, destination: Path):
+def _write_generated_textures(destination: Path, documents):
     """Materialize packed Mesh-conversion images only in the export staging tree."""
 
     from .materials import split_resource_id
+    from .core.texture_usage import referenced_texture_ids, texture_candidates
 
-    referenced_ids: set[str] = set()
-    for obj in scene.objects:
-        if obj.get("halo_role") != PRIMITIVE_ROLE:
-            continue
-        node = getattr(obj, "halo_node", None)
-        if node is None:
-            continue
-        if node.texture:
-            referenced_ids.add(str(node.texture))
-        if node.primitive_type == "ring" and node.inner_texture:
-            referenced_ids.add(str(node.inner_texture))
+    referenced_paths = {path for identifier in referenced_texture_ids(documents)
+                        for path in texture_candidates(identifier)}
     for image in bpy.data.images:
         if not image.get("halo_generated_texture"):
             continue
         texture_id = str(image.get("halo_texture_id") or "")
-        if not texture_id or texture_id not in referenced_ids:
+        if not texture_id:
             continue
         namespace, relative = split_resource_id(texture_id)
+        if f"assets/{namespace}/{relative}" not in referenced_paths:
+            continue
         target = (destination / "assets" / namespace / relative).resolve()
         try:
             target.relative_to(destination.resolve())
@@ -1310,8 +1246,32 @@ def _write_generated_textures(scene, destination: Path):
             image.file_format = old_format
 
 
+def _prune_unused_staged_textures(destination: Path, documents) -> list[str]:
+    """Remove unused texture families from this export's private staging tree."""
+    from .core.texture_usage import unused_texture_files
+
+    root = destination.resolve()
+    files = {path.relative_to(root).as_posix(): path for path in root.rglob("*") if path.is_file()}
+    unused = sorted(unused_texture_files(files, documents))
+    for relative in unused:
+        path = files[relative]
+        path.resolve().relative_to(root)
+        path.unlink()
+    # Also remove empty former namespaces from folder exports. This never
+    # removes directories that still contain definitions or unknown files.
+    assets = root / "assets"
+    for path in sorted(assets.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+        if path.is_dir() and not path.is_symlink() and not any(path.iterdir()):
+            path.resolve().relative_to(root)
+            path.rmdir()
+    return unused
+
+
 def export_pack_from_scene(scene, target_path: str | os.PathLike[str], zip_output: bool | None = None, overwrite: bool = False) -> str:
     """Export the current scene into a folder or ZIP using an atomic temp tree."""
+
+    from .resource_store import ensure_resources
+    ensure_resources(scene, rebind=False)
 
     hierarchy_errors = []
     for obj in scene.objects:
@@ -1350,7 +1310,6 @@ def export_pack_from_scene(scene, target_path: str | os.PathLike[str], zip_outpu
     try:
         _copy_project_sources_to_temp(scene, str(temporary))
         _remove_staged_definition_files(temporary)
-        _write_generated_textures(scene, temporary)
         manifest = _json_copy(DEFAULT_MANIFEST)
         try:
             parsed_manifest = json.loads(scene.halo_project.manifest_json or "{}")
@@ -1361,6 +1320,7 @@ def export_pack_from_scene(scene, target_path: str | os.PathLike[str], zip_outpu
         manifest = _complete_manifest(manifest)
         (temporary / "pack.mcmeta").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         used_definition_paths: set[Path] = set()
+        exported_documents = []
         for item in scene.halo_project.definitions:
             raw = raw_definitions.get(item.definition_id)
             if raw is None:
@@ -1379,6 +1339,11 @@ def export_pack_from_scene(scene, target_path: str | os.PathLike[str], zip_outpu
                 path.parent.mkdir(parents=True, exist_ok=True)
             used_definition_paths.add(path)
             path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            exported_documents.append(raw)
+        # The JSON actually written above is authoritative, not stale Images,
+        # cached source definitions, visible-object selection or namespaces.
+        _write_generated_textures(temporary, exported_documents)
+        _prune_unused_staged_textures(temporary, exported_documents)
         if zip_output:
             target.parent.mkdir(parents=True, exist_ok=True)
             temp_zip = Path(tempfile.mktemp(prefix="halo_pack_", suffix=".zip", dir=str(target.parent)))

@@ -1,15 +1,54 @@
-# Halo Pack Editor 0.3.1 测试报告
+# Halo Pack Editor 0.3.5 测试报告
 
-测试日期：2026-08-28
+测试日期：2026-08-31
 宿主：Blender 5.2.0 LTS（`fbe6228777e7`）  
-交付包：`dist/halo_pack_editor-0.3.1.zip`
-SHA-256：`CA98BF1E2494B00E972A6EB89EE899BA733E54CBC7700BBBBA5799437232B9D6`
+交付包：`dist/halo_pack_editor-0.3.5.zip`
+SHA-256：`BBB821379AE703340E07FF0B9B71152A7B533FFA1A53975E213E1C278FA7E05F`
+
+## 0.3.5 命名空间与贴图迁移专项验收
+
+- 根因：Definition ID 回调原来只更新光环 ID、对象标记与 UI 选择，未迁移图片文件或贴图引用；仅靠导出清理不能将有效的旧命名空间引用变为新路径。
+- 新增 6 项纯 Python 测试：PNG/labPBR/元数据家族字节保持、显式与省略扩展名引用合一、共享原文件保留、冲突后缀及重复迁移复用、多个来源的路径冲突保护、缺失主图及残存附图、默认 minecraft、旧式/未知 JSON 字段重映射及路径安全。总计 37 项通过。
+- 新增 Blender 后台专项：空白光环缺图不阻止重命名；`a:b → d:b → e:new → e:renamed` 连续编辑后，Ring 内外贴图、跨命名空间材质、高级字段、仅内嵌的 Mesh PNG 同步到新命名空间。逐字节验证附图与烘焙 PNG；同包中另一隐藏光环及其原 Image/JSON 不变。仅改名称部分不迁移；重复 ID、非法命名空间及模拟文件复制失败保留原 ID。
+- 预览材质链接已刷新且 PNG 已内嵌；ZIP 和文件夹仅含最终引用所需图片，共享原图片保留、无用中间命名空间排除。保存 `.blend` 再打开后再次导出通过。
+- 全量构建、Hina/Mesh/合并项目、六种跨进程资源恢复测试、EEVEE/Cycles、Extension validate/build 均通过。日志：`F:\codex-cache\halo-blender-addon\build-0.3.5-20260831.log`；无 Traceback 或非预期错误，负向验证用例保留预期错误提示。
+- 最终 ZIP 在隔离配置 `F:\codex-cache\halo-blender-addon\isolated-0.3.5-20260831` 安装并启用成功，使用实际安装模块 `bl_ext.user_default.halo_pack_editor` 完整重跑命名空间迁移专项通过。日志：`installed-namespace-0.3.5-20260831.log`；未覆盖用户安装，未修改用户实际 `.blend`。本轮与之前累计改动均未暂存、未提交。
+
+## 0.3.4 无引用贴图导出清理专项验收
+
+- 根因：导出先复制每个来源的完整编辑缓存，原先仅清理旧定义 JSON，未筛选其中 PNG；缓存与内嵌副本中保留的历史贴图因此进入成品包。
+- 新增 7 项纯 Python 测试通过：旧命名空间筛除、嵌套/旧式图元/Ring 双面/跨命名空间/多定义引用、labPBR 和图片元数据、省略扩展名及默认 minecraft、缺图不按文件名误匹配、保留非贴图文件、路径越界及非字符串引用防护、按大小写精确引用已有文件。总计 31 项纯 Python 测试。
+- `blender_export_texture_test.py` 模拟 `minecraft:halo → oldname:halo → newname:final`，每阶段改用新贴图，并保留历史 Image、旧来源 JSON 和缓存文件。ZIP/文件夹导出都只包含最终引用；空的 minecraft/oldname 目录消失，缓存原始字节、Image 数据块不变。
+- 验证隐藏光环 Ring 内外贴图保留，跨光环共享贴图保留；删除隐藏光环后仅删除其独用内侧 PNG 家族，共用外侧仍导出；删除全部光环后不导出纹理目录内 PNG。`pack.png`、未知二进制文件和非纹理目录中的未知图片保持原样。
+- Mesh 风格的打包图片也按最终 JSON 选择：当前图元与保留扩展字段引用的图片导出，无引用的旧命名空间生成图片不导出。保存 `.blend` 后从完整内嵌缓存恢复并再次导出，历史贴图不会重新混入。
+- 全套构建、Hina/Mesh/多来源/六种跨进程资源测试、EEVEE/Cycles、Extension validate/build 通过。日志：`F:\codex-cache\halo-blender-addon\build-0.3.4-20260831.log`，无 ERROR/Traceback。
+- 最终 ZIP 在 `F:\codex-cache\halo-blender-addon\isolated-0.3.4-20260831` 安装启用成功，实际安装模块从测试 `.blend` 输出 ZIP 和文件夹，确认旧贴图排除、共享与生成图片保留、来源缓存字节未改。未覆盖用户安装，本轮及之前改动均未提交。
+
+## 0.3.3 PNG 复用与 Temp 清理专项验收
+
+- 6 项新增纯 Python 用例通过：同 PNG 不加后缀、同名不同内容保留原文件并复用已有编号副本、已绑定的不同名称图片复用、labPBR/图片元数据一致性、不同来源/命名空间隔离、保护孤立附图及拒绝不存在的输入。全套纯 Python 测试现为 24 项。
+- Blender 中将同一 PNG 重复导入另一个图元、Ring 外侧及内侧，确认资源 ID 相同、Image 数量不增长；外部文件改名但内容与附图相同仍复用。保存 `.blend` 变成相对路径后再次导入，继续复用原 Image。
+- `cleanup_prepare` / `cleanup_reopen` 独立进程构造并重开旧工程：两张无原文件的 Halo Temp 图片（一张闲置、一张被图元使用）在恢复后自动删除 Image 数据块；可恢复的外侧/内侧、已打包图片、非 Halo Temp 图片与非 Temp 图片均保留。另验证仍有像素数据的图片不会删除。图元、材质节点及 JSON 贴图 ID 保留，缺图使用占位显示，保存重开后不复活旧失效 Image；Blender“打包资源”不再访问那些旧路径。
+- 构建全量回归通过，包含 24 项纯 Python 测试、六种跨进程资源测试、Hina/Mesh/多来源编辑及重开、EEVEE/Cycles 渲染、Extension validate/build。日志：`F:\codex-cache\halo-blender-addon\build-0.3.3-20260831-final.log`，无 ERROR/Traceback；清理测试保留预期的缺图警告。
+- 最终 ZIP 在 `F:\codex-cache\halo-blender-addon\isolated-0.3.3-20260831-verified` 从磁盘安装并启用成功；实际安装模块验证 PNG 导入复用、自动恢复与自动清理通过。已修正安装注册时访问 `_RestrictData.images` 的问题；没有改动用户正在使用的扩展安装。
+- 本轮与 0.3.2 改动均保留在工作区，未提交；未对用户实际 `.blend` 执行删除操作。
+
+## 0.3.2 贴图持久化专项验收
+
+- 根因：普通 PNG 未打包，仅保存外部路径；旧版 PNG 导入还会建立系统 Temp 根。Mesh 烘焙图片虽已打包，但不能保护普通导入图片。另复现 Blender ImagePackedFile 保留旧路径，即使 Image 路径已修改，“打包资源”仍尝试访问失效 Temp 的问题。
+- `blender_resource_persistence_test.py` 四个独立 Blender 进程模式通过：普通 PNG / Ring 内侧立即打包；保存自动内嵌三个来源（文件夹、ZIP、本地 PNG）的全部资源；随后把测试原包和缓存可恢复地移走；另一进程未启用扩展时就能从打包数据读取图片像素，启用后恢复完整缓存。
+- 按来源逐字节比较所有资源，包括共享同 ID 但颜色不同的两张 PNG、Ring 内侧、`_n/_s/_e`、`.png.mcmeta`、`pack.png`、未知二进制文件及本地重链接 PNG。验证恢复后材质不串源、几何刷新不丢图、部分缓存丢失可以恢复，ZIP/文件夹导出资源字节一致。
+- 旧工程回归：构造缺少来源列表、未打包图片、原 Temp 根失效且含闲置旧 Image 数据块的 `.blend`；新进程从仍在原位的 ZIP 恢复外侧/内侧及闲置图片，迁移到持久目录，执行“打包资源”无找不到文件报错。修复不重导入光环 JSON，不改变组的编辑数据。
+- 内嵌 ZIP 路径穿越拒绝；损坏快照有诊断且保存不会覆盖它；真正不存在的图片有明确警告，且不会将占位棋盘格写成资源 PNG。未修改资源的快照 SHA-256 稳定；普通用户模型的图片不会被自动打包。保存/加载处理器注册与注销通过。
+- 全量构建使用隔离 Blender 环境，不加载用户已安装的旧版扩展。日志：`F:\codex-cache\halo-blender-addon\build-0.3.2-20260831-final.log`。18 项纯 Python 测试、Hina/动画/Mesh/多来源/保存重开、EEVEE/Cycles 渲染及 Extension validate/build 全部通过；日志中无 ERROR/Traceback。
+- 另在 `F:\codex-cache\halo-blender-addon\isolated-0.3.2-20260831` 安装最终 ZIP 并启用。使用实际安装的 `bl_ext.user_default.halo_pack_editor` 打开原包/缓存已移走的测试工程，验证自动恢复、Blender 打包资源和 ZIP 导出通过。未覆盖用户现有安装。
+- 限制：没有取得用户实际损坏的 `.blend`，本轮以可复现同类路径丢失的工程验收。原包与图片字节均已丢失的旧工程无法凭 JSON 自动重建；需恢复原包位置或重链接 PNG。下列其他模组样例与 Java 解析项包含既有版本验收记录；本轮未运行 Minecraft 客户端目视对照。
 
 ## 自动化结果
 
-- 纯 Python：18 项测试全部通过。覆盖未知 JSON 字段与旧式写法保留、ZIP 安全、原子导出、资源路径与 PNG/labPBR、坐标矩阵、YXZ 旋转、动画函数、继承、过渡补值/反演/缓动和 `degrees` 行程。
+- 纯 Python：37 项测试全部通过。覆盖命名空间贴图迁移、贴图引用筛选、PNG 内容复用及冲突保护、未知 JSON 字段与旧式写法保留、ZIP 安全、原子导出、资源路径与 PNG/labPBR、坐标矩阵、YXZ 旋转、动画函数、继承、过渡补值/反演/缓动和 `degrees` 行程。
 - Blender Extension：源码 manifest 校验、ZIP 构建、构建包校验均通过。
-- 全新安装：在 `F:\codex-cache\halo-blender-addon\isolated-0.3.1-20260828` 完全隔离的 Blender 配置、脚本、数据和扩展目录中执行 `extension install-file --enable`；确认扩展从隔离路径加载，并在新建项目中读取到 1.20～26.2 的四项兼容元数据。
+- 全新安装：0.3.5 最终 ZIP 在隔离配置中安装启用成功，并完成命名空间迁移、保存重开及 ZIP/文件夹导出测试，见上方专项验收。
 - Hina：导入 57 个组、29 个图元、至少四层结构；检查 Billboard 法线/UV、Ring 表面数与剔除、材质 Alpha 乘法节点；场景同步、ZIP 往返、原子文件夹往返、保存 `.blend` 与重新打开均通过。
 - Shiroko：startup 与 `id_overrides` 在 Blender 时间轴求值无错误，`degrees` 字段由核心求值器验收；从真实常驻动画通道读取既有项，并通过逐行操作器完成新增、编辑、排序与删除测试。
 - 动画 JSON 编辑：成功把 startup 打开为 Blender Text 数据块，在多行 Text Editor 中修改并通过侧栏操作器重新解析、应用；无效 JSON 会阻止应用并报告错误。

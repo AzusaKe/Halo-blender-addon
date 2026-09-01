@@ -296,6 +296,18 @@ def _new_placeholder_image(texture_id: str):
     return image
 
 
+def pack_halo_image(image):
+    """Keep Halo PNGs portable without packing unrelated scene resources."""
+    if image is not None and not image.get("halo_missing_texture"):
+        try:
+            if image.is_dirty or not image.packed_file:
+                image.pack()
+            image.pop("halo_pack_error", None)
+        except RuntimeError as exc:
+            image["halo_pack_error"] = str(exc)
+    return image
+
+
 def load_texture_image(texture_id: str, pack_root: str | os.PathLike[str] | None = None):
     """Load a pack texture or return a visible placeholder image."""
 
@@ -315,16 +327,31 @@ def load_texture_image(texture_id: str, pack_root: str | os.PathLike[str] | None
     path = resolve_texture_path(texture_id, pack_root)
     if path:
         for image in bpy.data.images:
-            if os.path.normcase(os.path.abspath(getattr(image, "filepath", ""))) == os.path.normcase(path):
-                return image
+            if os.path.normcase(os.path.abspath(bpy.path.abspath(getattr(image, "filepath", "")))) == os.path.normcase(path):
+                image["halo_texture_id"] = texture_id
+                image["halo_source_path"] = path
+                return pack_halo_image(image)
         try:
             image = bpy.data.images.load(path, check_existing=True)
             image.name = Path(path).name
             image["halo_texture_id"] = texture_id
             image["halo_source_path"] = path
-            return image
+            return pack_halo_image(image)
         except RuntimeError:
             pass
+    # A packed image remains valid when its cache was deleted mid-session.
+    # Match its original source path, not just its resource ID (merged packs).
+    if pack_root:
+        namespace, relative = split_resource_id(texture_id)
+        candidate = Path(pack_root) / "assets" / namespace / relative
+        candidates = {os.path.normcase(str(candidate.resolve()))}
+        if not candidate.suffix:
+            candidates.add(os.path.normcase(str(candidate.with_suffix(".png").resolve())))
+        for image in bpy.data.images:
+            source_path = image.get("halo_source_path", "")
+            if (source_path and image.packed_file and not image.get("halo_missing_texture")
+                    and os.path.normcase(str(Path(source_path).resolve())) in candidates):
+                return image
     # Reuse placeholders by identifier to avoid making thousands of images
     # in a large pack with one missing texture.
     name = "Missing Halo Texture - " + (texture_id or "unknown")
@@ -459,24 +486,82 @@ def texture_destination(pack_root: str | os.PathLike[str], texture_id: str) -> s
     return str(destination)
 
 
-def copy_texture_with_sidecars(source: str, pack_root: str, texture_id: str) -> list[str]:
-    """Copy a PNG and any labPBR sidecars, returning destination paths."""
+def _texture_family(path: Path) -> dict[str, Path]:
+    """A material includes its PNG, labPBR companions and animation metadata."""
+    result = {}
+    for suffix in ("", "_n", "_s", "_e"):
+        image = path.with_name(path.stem + suffix + path.suffix)
+        for key, candidate in ((suffix, image), (suffix + ".mcmeta", Path(str(image) + ".mcmeta"))):
+            if candidate.is_file():
+                result[key] = candidate
+    return result
+
+
+def _texture_signature(family: dict[str, Path]):
+    signature = {}
+    for key, path in family.items():
+        with path.open("rb") as stream:
+            signature[key] = hashlib.file_digest(stream, "sha256").digest()
+    return signature
+
+
+def copy_texture_with_sidecars(
+    source: str, pack_root: str, texture_id: str, *, reuse_candidates: Iterable[str] = (),
+    allow_missing_base: bool = False,
+    other_pack_roots: Iterable[str] = (),
+) -> list[str]:
+    """Reuse identical material content; suffix only genuine name conflicts.
+
+    Optional candidates are already bound images in this source/namespace.
+    Byte signatures include sidecars so two different material families never
+    overwrite each other just because their color PNGs happen to be identical.
+    """
 
     source_path = Path(source).resolve()
+    if not source_path.is_file() and not allow_missing_base:
+        raise FileNotFoundError(str(source_path))
     destination = Path(texture_destination(pack_root, texture_id))
+    namespace_root = Path(pack_root).resolve() / "assets" / split_resource_id(texture_id)[0]
+    family = _texture_family(source_path)
+    signature = _texture_signature(family)
+    def conflicts_with_other_source(candidate):
+        relative = candidate.relative_to(Path(pack_root).resolve())
+        for other in other_pack_roots:
+            target = Path(other).resolve() / relative
+            existing = _texture_family(target)
+            if (existing and _texture_signature(existing) != signature) or target.is_dir():
+                return True
+        return False
+
+    # Old imports may already have _1/_2 copies. Reuse one instead of growing
+    # a new suffix on each import, including when the unsuffixed file differs.
+    numbered = sorted(p for p in destination.parent.glob(destination.stem + "_*" + destination.suffix)
+                      if p.stem[len(destination.stem) + 1:].isdigit())
+    seen = set()
+    for candidate in (destination, *map(Path, reuse_candidates), *numbered):
+        candidate = candidate.resolve()
+        if candidate in seen or not candidate.is_relative_to(namespace_root.resolve()):
+            continue
+        seen.add(candidate)
+        existing_family = _texture_family(candidate)
+        if (existing_family and _texture_signature(existing_family) == signature
+                and not conflicts_with_other_source(candidate)):
+            return [str(candidate), *(str(existing_family[key]) for key in family if key)]
     selected = destination
-    if selected.exists() and selected.resolve() != source_path:
-        index = 1
-        while selected.exists():
-            selected = destination.with_name(f"{destination.stem}_{index}{destination.suffix}")
-            index += 1
-    copied = []
-    candidates = (("", source_path), *[(suffix, source_path.with_name(source_path.stem + suffix + source_path.suffix)) for suffix in ("_n", "_s", "_e")])
-    for sidecar_suffix, candidate in candidates:
-        if candidate.is_file():
-            target = selected.with_name(selected.stem + sidecar_suffix + selected.suffix)
-            if target.resolve() != candidate.resolve():
-                shutil.copy2(candidate, target)
+    index = 1
+    while _texture_family(selected) or selected.exists() or conflicts_with_other_source(selected):
+        selected = destination.with_name(f"{destination.stem}_{index}{destination.suffix}")
+        index += 1
+    # Namespace renaming also supports incomplete old packs: the first path
+    # remains the base image's destination even when only sidecars survived.
+    copied = [str(selected)]
+    for key, candidate in family.items():
+        suffix = key.removesuffix(".mcmeta")
+        target = selected.with_name(selected.stem + suffix + selected.suffix)
+        if key.endswith(".mcmeta"):
+            target = Path(str(target) + ".mcmeta")
+        shutil.copy2(candidate, target)
+        if key:
             copied.append(str(target))
     return copied
 

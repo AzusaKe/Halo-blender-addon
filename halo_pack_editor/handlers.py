@@ -589,17 +589,35 @@ if bpy is not None:
         _SCENE_VIEW_QUATERNIONS.clear()
         for scene in bpy.data.scenes:
             try:
-                from .blender_scene import ensure_source_roots, enforce_managed_transform_locks, update_preview_roots
+                from .blender_scene import enforce_managed_transform_locks, update_preview_roots
+                from .resource_store import ensure_resources
                 from .materials import refresh_halo_material_settings
-                ensure_source_roots(scene)
+                ensure_resources(scene, restore_saved=True)
                 enforce_managed_transform_locks(scene, restore=True)
                 refresh_halo_material_settings()
                 # Rebuild the non-animated anchor pose before evaluating files
                 # saved by an older build that has no cached base transform.
                 update_preview_roots(scene)
                 update_animation(scene)
-            except Exception:
-                pass
+            except Exception as exc:
+                scene.halo_project["halo_resource_warnings"] = json.dumps([f"资源恢复失败：{exc}"], ensure_ascii=False)
+        from .resource_store import cleanup_missing_temp_images
+        cleanup_missing_temp_images()
+
+
+    @persistent
+    def halo_save_pre(_dummy):
+        from .resource_store import embed_resources
+        for scene in bpy.data.scenes:
+            try:
+                report = embed_resources(scene)
+                for warning in report["warnings"]:
+                    print("Halo 资源保存警告:", warning)
+            except Exception as exc:
+                scene.halo_project["halo_resource_warnings"] = json.dumps([f"资源内嵌失败：{exc}"], ensure_ascii=False)
+                print("Halo 资源内嵌失败:", exc)
+        from .resource_store import cleanup_missing_temp_images
+        cleanup_missing_temp_images()
 
 
     @persistent
@@ -613,7 +631,7 @@ if bpy is not None:
             scene.halo_project.active_uuid = active.get("halo_uuid", "")
 
 
-    HANDLER_FUNCTIONS = (halo_frame_change, halo_load_post, halo_depsgraph_update)
+    HANDLER_FUNCTIONS = (halo_frame_change, halo_load_post, halo_save_pre, halo_depsgraph_update)
 else:  # pragma: no cover
     HANDLER_FUNCTIONS = ()
 
@@ -626,6 +644,8 @@ def register_handlers():
         bpy.app.handlers.frame_change_post.append(halo_frame_change)
     if halo_load_post not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(halo_load_post)
+    if halo_save_pre not in bpy.app.handlers.save_pre:
+        bpy.app.handlers.save_pre.append(halo_save_pre)
     if halo_depsgraph_update not in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.append(halo_depsgraph_update)
     try:
@@ -635,11 +655,18 @@ def register_handlers():
     for scene in scenes:
         try:
             from .blender_scene import enforce_managed_transform_locks
+            from .resource_store import ensure_resources
             from .materials import refresh_halo_material_settings
+            ensure_resources(scene, restore_saved=True)
             enforce_managed_transform_locks(scene, restore=True)
             refresh_halo_material_settings()
-        except Exception:
-            pass
+        except Exception as exc:
+            scene.halo_project["halo_resource_warnings"] = json.dumps([f"资源恢复失败：{exc}"], ensure_ascii=False)
+    # Extension installation registers under Blender's _RestrictData wrapper.
+    # Defer data access there to the normal load/save recovery hooks.
+    if scenes:
+        from .resource_store import cleanup_missing_temp_images
+        cleanup_missing_temp_images()
     if _VIEW_DRAW_HANDLE is None:
         _VIEW_DRAW_HANDLE = bpy.types.SpaceView3D.draw_handler_add(_draw_face_camera, (), "WINDOW", "POST_VIEW")
 
@@ -648,7 +675,7 @@ def unregister_handlers():
     global _VIEW_DRAW_HANDLE
     if bpy is None:
         return
-    for collection in (bpy.app.handlers.frame_change_post, bpy.app.handlers.load_post, bpy.app.handlers.depsgraph_update_post):
+    for collection in (bpy.app.handlers.frame_change_post, bpy.app.handlers.load_post, bpy.app.handlers.save_pre, bpy.app.handlers.depsgraph_update_post):
         for callback in HANDLER_FUNCTIONS:
             if callback in collection:
                 collection.remove(callback)

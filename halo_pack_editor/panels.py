@@ -161,6 +161,17 @@ if bpy is not None:
             row = layout.row(align=True)
             row.operator("halo.open_raw_json", text="打开 JSON", icon="TEXT")
             row.operator("halo.apply_raw_json", text="应用 JSON", icon="FILE_REFRESH")
+            layout.operator("halo.pack_resources", text="修复并内嵌资源", icon="PACKAGE")
+            layout.label(text="保存 .blend 时自动内嵌 Halo 资源", icon="INFO")
+            cleaned = json.loads(project.get("halo_temp_cleanup_json", "[]"))
+            if cleaned:
+                layout.label(text=f"上次清理失效 Temp 图片：{len(cleaned)} 个", icon="INFO")
+            warnings = json.loads(project.get("halo_resource_warnings", "[]"))
+            if warnings:
+                warning_box = layout.box()
+                warning_box.alert = True
+                warning_box.label(text=f"{len(warnings)} 项资源未能完整恢复", icon="ERROR")
+                warning_box.label(text="点击修复查看详情；缺失 PNG 请重新链接")
             layout.label(text="组的父子关系：见下方“树形编辑”面板", icon="INFO")
 
 
@@ -188,6 +199,8 @@ if bpy is not None:
             error = context.scene.halo_project.get("halo_definition_id_error", "")
             if error:
                 layout.label(text=error, icon="ERROR")
+            for notice in json.loads(context.scene.halo_project.get("halo_definition_rename_notices", "[]")):
+                layout.label(text=notice, icon="INFO")
             layout.label(
                 text=f"图元总数：{_definition_primitive_count(context.scene, item.definition_id)}",
                 icon="MESH_DATA",

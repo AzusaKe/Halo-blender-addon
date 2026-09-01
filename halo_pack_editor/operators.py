@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import json
 import os
-import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Mapping
@@ -637,7 +636,7 @@ def validate_scene(scene) -> dict[str, list[str]]:
     """Validate the Blender tree without rejecting unknown JSON fields."""
 
     errors: list[str] = []
-    warnings: list[str] = []
+    warnings: list[str] = json.loads(scene.halo_project.get("halo_resource_warnings", "[]"))
     definitions = getattr(scene.halo_project, "definitions", ())
     seen_ids = set()
     for item in definitions:
@@ -1660,8 +1659,12 @@ if bpy is not None:
             project = context.scene.halo_project
             pack_root = blender_scene.definition_pack_root(context.scene, obj.get("halo_definition_id", ""))
             if not pack_root or not os.path.isdir(pack_root):
-                pack_root = tempfile.mkdtemp(prefix="halo_pack_edit_")
-                project.pack_root = pack_root
+                from .resource_store import ensure_resources
+                ensure_resources(context.scene)
+                pack_root = blender_scene.definition_pack_root(context.scene, obj.get("halo_definition_id", ""))
+                if not pack_root or not os.path.isdir(pack_root):
+                    self.report({"ERROR"}, "无法建立贴图资源目录，请先修复项目资源")
+                    return {"CANCELLED"}
             old_id = (node.inner_texture if self.target == "INNER" else node.texture) or node.texture or "minecraft:textures/halo/imported.png"
             namespace, relative = split_resource_id(old_id)
             filename = Path(self.filepath).name
@@ -1670,12 +1673,25 @@ if bpy is not None:
             else:
                 relative = relative.rsplit("/", 1)[0] + "/" + filename if "/" in relative else "textures/halo/" + filename
             texture_id = f"{namespace}:{relative}"
-            copied = copy_texture_with_sidecars(self.filepath, pack_root, texture_id)
+            assets_root = Path(pack_root).resolve() / "assets" / namespace
+            reuse_candidates = []
+            for image in bpy.data.images:
+                if not image.get("halo_texture_id") or image.get("halo_missing_texture"):
+                    continue
+                source_path = image.get("halo_source_path") or image.filepath
+                if source_path:
+                    candidate = Path(bpy.path.abspath(source_path)).resolve()
+                    if candidate.is_relative_to(assets_root.resolve()):
+                        reuse_candidates.append(str(candidate))
+            try:
+                copied = copy_texture_with_sidecars(self.filepath, pack_root, texture_id, reuse_candidates=reuse_candidates)
+            except (OSError, ValueError) as exc:
+                self.report({"ERROR"}, f"无法导入 PNG：{exc}")
+                return {"CANCELLED"}
             if not copied:
                 self.report({"ERROR"}, "无法复制所选贴图")
                 return {"CANCELLED"}
             actual = Path(copied[0]).resolve()
-            assets_root = Path(pack_root).resolve() / "assets" / namespace
             actual_relative = actual.relative_to(assets_root).as_posix()
             texture_id = f"{namespace}:{actual_relative}"
             if self.target == "INNER":
@@ -1709,6 +1725,33 @@ if bpy is not None:
             _set_node_mesh(obj)
             self.report({"INFO"}, "Ring 内侧已改为使用外侧纹理")
             return {"FINISHED"}
+
+
+    class HALO_OT_pack_resources(bpy.types.Operator):
+        bl_idname = "halo.pack_resources"
+        bl_label = "修复并内嵌资源"
+        bl_description = "从原资源包或已内嵌数据恢复贴图，并内嵌资源；完成后请保存 .blend"
+
+        def execute(self, context):
+            from .resource_store import ensure_resources, embed_resources, cleanup_missing_temp_images
+            try:
+                first = ensure_resources(context.scene)
+                result = embed_resources(context.scene)
+                removed = cleanup_missing_temp_images(context.scene)
+                from .handlers import update_animation
+                update_animation(context.scene)
+                warnings = list(dict.fromkeys(first["warnings"] + result["warnings"]))
+                context.scene.halo_project["halo_resource_warnings"] = json.dumps(warnings, ensure_ascii=False)
+                if warnings:
+                    for warning in warnings:
+                        print("Halo 资源修复:", warning)
+                    self.report({"WARNING"}, f"仍有 {len(warnings)} 项资源问题，请检查下方提示/控制台；缺失 PNG 可在图元面板重新链接")
+                else:
+                    self.report({"INFO"}, f"已内嵌资源（{result['packed_images']} 张普通贴图），清理 {len(removed)} 个失效 Temp 图片块；请保存 .blend")
+                return {"FINISHED"}
+            except Exception as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
 
 
     class HALO_OT_validate(bpy.types.Operator):
@@ -2487,6 +2530,7 @@ if bpy is not None:
         HALO_OT_refresh_geometry,
         HALO_OT_import_texture,
         HALO_OT_clear_inner_texture,
+        HALO_OT_pack_resources,
         HALO_OT_validate,
         HALO_OT_open_raw_json,
         HALO_OT_apply_raw_json,
