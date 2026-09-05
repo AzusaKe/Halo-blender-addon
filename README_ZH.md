@@ -21,7 +21,7 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 
 1. 使用 Blender 5.2 LTS 或更新版本。
 2. 打开“编辑 → 偏好设置 → 扩展”，选择“从磁盘安装”。
-3. 选择 `halo_pack_editor-0.3.5.zip` 并启用扩展。
+3. 选择 `halo_pack_editor-0.3.6.zip` 并启用扩展。
 4. 在 3D 视图按 `N`，打开“Halo 光环”标签页。
 
 ## 保存工程与修复旧贴图（0.3.2）
@@ -66,6 +66,9 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
    - 只要选择项来自不同直接父级、包含非 Halo 对象或跨光环定义，批量操作就会拒绝执行并显示中文原因，不会只处理其中一部分。
 5. 编辑常驻动画时，先选择组（也可选择该组下的图元），再选择通道；现有项会逐条显示，可直接编辑、排序、删除或新增，无需填写索引。
 6. startup/shutdown 在“过渡动画”面板中图形化编辑：先选择启动/关闭和组 ID，再添加、排序或删除段；每段可设置时间、缓动，并添加 `offset`、`scale`、`alpha`、`rotation` 通道。通道支持 `from`/`to`、独立时间、独立缓动以及 rotation `degrees`。完整 JSON 入口继续用于高级字段与故障修复。
+   - 常驻、startup 和 shutdown 的“多行 JSON / 完整 JSON”会切换到 Blender 文本编辑器，并自动打开右侧“Halo 动画 JSON”栏。点击“应用动画 JSON”立即同步并预览；“应用并返回 3D 视图”会先应用再切回视图。
+   - 有效的未应用修改会在保存 `.blend` 或导出资源包前自动同步到动画字段、完整定义 JSON 和场景树。重复打开同一个编辑器不会清空尚未应用的文本。
+   - 无效 JSON 不会覆盖最后一次有效动画；文本仍保存在 `.blend` 中供修复，并在侧栏显示错误。存在无效待应用文本时，资源包导出会停止并报告具体文本块。
 7. 使用“动画预览”选择常驻、启动、关闭或完整序列，并播放 Blender 时间轴。
    - “动画预览”顶部会显示当前渲染器。点击“启用 EEVEE 一致性预览”可切换到 EEVEE，并把旧 `.blend` 中的 Halo 材质升级为“抖动”透明。该模式避免“混合”透明的对象排序遮挡，同时让带独立内外纹理的 Ring 通过背面剔除只显示正确朝向的表面。
    - 使用 Cycles 时，面板会显示“Cycles（单层双面）”。显式内外纹理 Ring 在 Blender 中只生成一层圆柱面，并按观察侧选择外侧或内侧贴图；JSON 与导出仍完整保留两个纹理字段。Halo 的发光只表现为自身全亮，不作为 Cycles 面光源照亮其他物体。旧 `.blend` 可点击“刷新 Cycles 材质”自动升级。
@@ -103,7 +106,7 @@ JSON 会统一输出为 UTF-8、两空格缩进；不保证原始空白逐字节
 ```powershell
 python -m unittest discover -s tests -p 'test_*.py' -v
 blender --command extension validate halo_pack_editor
-blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.3.5.zip
+blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.3.6.zip
 ```
 
 Blender 后台集成测试脚本位于 `scripts/`。测试与下载缓存应放在 `F:\codex-cache\halo-blender-addon`，扩展自身不会依赖该路径。

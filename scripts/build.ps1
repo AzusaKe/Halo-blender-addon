@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $extensionRoot = Join-Path $projectRoot 'halo_pack_editor'
 $distRoot = Join-Path $projectRoot 'dist'
-$packagePath = Join-Path $distRoot 'halo_pack_editor-0.3.5.zip'
+$packagePath = Join-Path $distRoot 'halo_pack_editor-0.3.6.zip'
 
 if (-not (Test-Path -LiteralPath $BlenderExe)) {
     throw "Blender 5.2 executable not found: $BlenderExe"
@@ -50,6 +50,10 @@ if (Test-Path -LiteralPath $mergeTest) {
 }
 
 $reopenTest = Join-Path $PSScriptRoot 'blender_reopen_test.py'
+$animationTextTest = Join-Path $PSScriptRoot 'blender_animation_text_test.py'
+& $BlenderExe --background --factory-startup --python-exit-code 1 --python $animationTextTest -- $projectRoot
+if ($LASTEXITCODE -ne 0) { throw 'Blender animation Text persistence test failed' }
+
 $namespaceTest = Join-Path $PSScriptRoot 'blender_namespace_migration_test.py'
 & $BlenderExe --background --factory-startup --python-exit-code 1 --python $namespaceTest -- $projectRoot
 if ($LASTEXITCODE -ne 0) { throw 'Blender namespace texture migration test failed' }

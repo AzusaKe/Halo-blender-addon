@@ -1,9 +1,18 @@
-# Halo Pack Editor 0.3.5 测试报告
+# Halo Pack Editor 0.3.6 测试报告
 
 测试日期：2026-08-31
 宿主：Blender 5.2.0 LTS（`fbe6228777e7`）  
-交付包：`dist/halo_pack_editor-0.3.5.zip`
-SHA-256：`BBB821379AE703340E07FF0B9B71152A7B533FFA1A53975E213E1C278FA7E05F`
+交付包：`dist/halo_pack_editor-0.3.6.zip`
+SHA-256：`077D7D1A624FD17AC946234F39EF19E43225670771B5482016C191E5CEAAB045`
+
+## 0.3.6 多行动画 JSON 持久化专项验收
+
+- 根因：旧操作器只在当前 Text Editor 上下文中把文本写回部分 PropertyGroup；未建立独立动画文本指针，也没有接入 `.blend` 保存、加载和资源包导出，定义原始 AST/Root/组之间的副本亦可能不同步。文本编辑器右栏关闭时，应用入口不可见。
+- 新增统一动画 Text 同步层：常驻、startup、shutdown 的场景、定义及组 UUID 绑定独立于完整定义 JSON；显式“应用动画 JSON”、“应用并返回 3D 视图”、播放预览、保存 `.blend`、加载旧 Text 和 ZIP/文件夹导出共用同一应用逻辑。定义 ID 重命名会同步更新打开的 Text 绑定。
+- Blender 专项覆盖光环根常驻动画、组常驻动画、startup、shutdown：验证重复打开不丢待应用修改、显式应用、返回时应用、保存时自动应用、重命名后应用、保存重开、导出前自动应用，以及 Definition/Root/Group/导出 JSON 四层一致。
+- 无效待应用 JSON 会保留文本且不覆盖最后一次有效动画；显式应用显示解析位置，导出拒绝继续。修复文本后可正常应用。文本块启用 fake user，随 `.blend` 保存。
+- 全量 37 项纯 Python、Hina/Mesh/合并项目、资源持久化、命名空间迁移、EEVEE/Cycles、Extension validate/build 均通过。日志：`F:\codex-cache\halo-blender-addon\build-0.3.6-20260901.log`。负向无效 JSON 与缺失示例 PNG 提示均为预期验证，无 Traceback。
+- 最终 ZIP 在 `F:\codex-cache\halo-blender-addon\isolated-0.3.6-20260901` 安装启用成功，使用实际安装模块 `bl_ext.user_default.halo_pack_editor` 重新完成动画 Text 专项。日志：`installed-animation-text-0.3.6-20260901.log`。0.3.5 已提交为 `b56a60d`；0.3.6 当前未暂存、未提交。
 
 ## 0.3.5 命名空间与贴图迁移专项验收
 
@@ -48,7 +57,7 @@ SHA-256：`BBB821379AE703340E07FF0B9B71152A7B533FFA1A53975E213E1C278FA7E05F`
 
 - 纯 Python：37 项测试全部通过。覆盖命名空间贴图迁移、贴图引用筛选、PNG 内容复用及冲突保护、未知 JSON 字段与旧式写法保留、ZIP 安全、原子导出、资源路径与 PNG/labPBR、坐标矩阵、YXZ 旋转、动画函数、继承、过渡补值/反演/缓动和 `degrees` 行程。
 - Blender Extension：源码 manifest 校验、ZIP 构建、构建包校验均通过。
-- 全新安装：0.3.5 最终 ZIP 在隔离配置中安装启用成功，并完成命名空间迁移、保存重开及 ZIP/文件夹导出测试，见上方专项验收。
+- 全新安装：0.3.6 最终 ZIP 在隔离配置中安装启用成功，并完成多行动画 JSON、保存重开及 ZIP/文件夹导出测试，见上方专项验收。
 - Hina：导入 57 个组、29 个图元、至少四层结构；检查 Billboard 法线/UV、Ring 表面数与剔除、材质 Alpha 乘法节点；场景同步、ZIP 往返、原子文件夹往返、保存 `.blend` 与重新打开均通过。
 - Shiroko：startup 与 `id_overrides` 在 Blender 时间轴求值无错误，`degrees` 字段由核心求值器验收；从真实常驻动画通道读取既有项，并通过逐行操作器完成新增、编辑、排序与删除测试。
 - 动画 JSON 编辑：成功把 startup 打开为 Blender Text 数据块，在多行 Text Editor 中修改并通过侧栏操作器重新解析、应用；无效 JSON 会阻止应用并报告错误。

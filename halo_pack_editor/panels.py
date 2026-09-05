@@ -606,7 +606,15 @@ if bpy is not None:
             if text.get("halo_node_uuid"):
                 layout.label(text=f"组 UUID: {text.get('halo_node_uuid')[:8]}")
             layout.operator("halo.apply_animation_json", text="应用动画 JSON", icon="CHECKMARK")
-            layout.operator("halo.return_3d_view", text="返回 3D 视图", icon="VIEW3D")
+            from .animation_text import text_is_pending
+            if text_is_pending(text):
+                layout.label(text="有尚未应用的修改", icon="ERROR")
+            else:
+                layout.label(text="修改已同步", icon="CHECKMARK")
+            error = text.get("halo_animation_last_error", "")
+            if error:
+                layout.label(text=error, icon="ERROR")
+            layout.operator("halo.return_3d_view", text="应用并返回 3D 视图", icon="VIEW3D")
 
 
     class HALO_PT_tree(Panel):

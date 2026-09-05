@@ -229,6 +229,13 @@ def _definition_id_update(self, context):
             node = getattr(obj, "halo_node", None)
             if node is not None:
                 node.definition_id = new_id
+        # Keep an open multi-line animation editor attached across ID and
+        # namespace renames, including edits not applied yet.
+        for text in bpy.data.texts:
+            if (text.get("halo_animation_editor")
+                    and text.get("halo_definition_id") == scene_old_id
+                    and text.get("halo_scene_name", scene.name) == scene.name):
+                text["halo_definition_id"] = new_id
     if project is not None:
         selected_index = int(getattr(project, "active_definition_index", -1))
         selected_item = project.definitions[selected_index] if 0 <= selected_index < len(project.definitions) else None
@@ -613,6 +620,7 @@ if bpy is not None:
         fine_rotation_step: FloatProperty(name="细调旋转步长", default=0.5, min=0.0001, precision=4)
         fine_scale_step: FloatProperty(name="细调缩放步长", default=0.01, min=0.00001, precision=5)
         raw_text_name: StringProperty(name="JSON 文本块", default="", options={"HIDDEN"})
+        animation_text_name: StringProperty(name="动画 JSON 文本块", default="", options={"HIDDEN"})
         validation_json: StringProperty(name="验证结果", default="")
         mesh_conversion_active: BoolProperty(name="Mesh 转换进行中", default=False, options={"HIDDEN", "SKIP_SAVE"})
         mesh_conversion_progress: FloatProperty(

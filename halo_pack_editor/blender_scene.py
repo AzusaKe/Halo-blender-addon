@@ -1270,7 +1270,9 @@ def _prune_unused_staged_textures(destination: Path, documents) -> list[str]:
 def export_pack_from_scene(scene, target_path: str | os.PathLike[str], zip_output: bool | None = None, overwrite: bool = False) -> str:
     """Export the current scene into a folder or ZIP using an atomic temp tree."""
 
+    from .animation_text import apply_pending_animation_texts
     from .resource_store import ensure_resources
+    apply_pending_animation_texts(scene, strict=True, refresh=False)
     ensure_resources(scene, rebind=False)
 
     hierarchy_errors = []

@@ -1106,7 +1106,7 @@ assert bpy.ops.halo.animation_term_remove(index=original_count) == {"FINISHED"}
 # Startup/shutdown JSON opens as a real multiline Text datablock and can be
 # applied back to the definition.
 assert bpy.ops.halo.open_animation_json(target="startup") == {"FINISHED"}
-animation_text = bpy.data.texts[scene.halo_project.raw_text_name]
+animation_text = bpy.data.texts[scene.halo_project.animation_text_name]
 startup_payload = json.loads(animation_text.as_string())
 startup_payload["editor_roundtrip_test"] = True
 animation_text.clear()

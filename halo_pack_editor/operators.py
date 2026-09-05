@@ -1877,6 +1877,12 @@ if bpy is not None:
 
         def execute(self, context):
             project = context.scene.halo_project
+            try:
+                from .animation_text import apply_pending_animation_texts
+                apply_pending_animation_texts(context.scene, strict=True, refresh=False)
+            except ValueError as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
             project.preview_mode = self.mode
             context.scene.render.fps = int(project.preview_fps)
             context.scene.frame_start = 1
@@ -2433,17 +2439,34 @@ if bpy is not None:
             label = {"resident": "resident", "startup": "startup", "shutdown": "shutdown"}[self.target]
             suffix = node_uuid[:8] if node_uuid else blender_scene._safe_name(definition_id)
             name = f"halo_{label}_{suffix}.json"
-            text = bpy.data.texts.get(name) or bpy.data.texts.new(name)
-            text.clear()
-            text.write(payload or "{}")
+            text = bpy.data.texts.get(name)
+            binding = (self.target, definition_id, node_uuid, context.scene.name)
+            current_binding = None if text is None else (
+                text.get("halo_animation_target", ""), text.get("halo_definition_id", ""),
+                text.get("halo_node_uuid", ""), text.get("halo_scene_name", ""),
+            )
+            if text is None or current_binding not in {binding, (*binding[:3], "")}:
+                text = bpy.data.texts.new(name)
+            from .animation_text import text_digest, text_is_pending
+            had_pending_edits = text_is_pending(text)
+            if not had_pending_edits:
+                text.clear()
+                text.write(payload or "{}")
             text["halo_animation_editor"] = True
             text["halo_animation_target"] = self.target
             text["halo_definition_id"] = definition_id
             text["halo_node_uuid"] = node_uuid
-            project.raw_text_name = name
+            text["halo_scene_name"] = context.scene.name
+            if not had_pending_edits:
+                text["halo_animation_applied_sha256"] = text_digest(text.as_string())
+                text["halo_animation_last_error"] = ""
+            text.use_fake_user = True
+            project.animation_text_name = text.name
             if context.area is not None:
                 context.area.type = "TEXT_EDITOR"
                 context.area.spaces.active.text = text
+                if hasattr(context.area.spaces.active, "show_region_ui"):
+                    context.area.spaces.active.show_region_ui = True
             self.report({"INFO"}, f"已打开多行动画 JSON：{name}")
             return {"FINISHED"}
 
@@ -2456,44 +2479,17 @@ if bpy is not None:
         def execute(self, context):
             text = getattr(getattr(context, "space_data", None), "text", None)
             if text is None or not text.get("halo_animation_editor"):
-                name = context.scene.halo_project.raw_text_name
+                name = context.scene.halo_project.animation_text_name
                 text = bpy.data.texts.get(name) if name else None
             if text is None or not text.get("halo_animation_editor"):
                 self.report({"ERROR"}, "当前没有 Halo 动画 JSON 文本")
                 return {"CANCELLED"}
             try:
-                parsed = json.loads(text.as_string())
-                if not isinstance(parsed, Mapping):
-                    raise ValueError("动画 JSON 根节点必须是对象")
-            except Exception as exc:
-                self.report({"ERROR"}, f"动画 JSON 无法应用：{exc}")
+                from .animation_text import apply_animation_text
+                apply_animation_text(context.scene, text)
+            except ValueError as exc:
+                self.report({"ERROR"}, str(exc))
                 return {"CANCELLED"}
-            payload = json.dumps(parsed, ensure_ascii=False, indent=2)
-            target = str(text.get("halo_animation_target", "resident"))
-            definition_id = str(text.get("halo_definition_id", ""))
-            node_uuid = str(text.get("halo_node_uuid", ""))
-            project = context.scene.halo_project
-            if target == "resident" and node_uuid:
-                obj = object_by_uuid(node_uuid)
-                if obj is None or obj.get("halo_role") != GROUP_ROLE:
-                    self.report({"ERROR"}, "原部件组已不存在")
-                    return {"CANCELLED"}
-                obj.halo_node.animation_json = payload
-                obj["halo_animation_json"] = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
-                raw = blender_scene._raw_from_object(obj)
-                raw["animation"] = parsed
-                obj["halo_raw_json"] = json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
-            else:
-                item = next((entry for entry in project.definitions if entry.definition_id == definition_id), None)
-                if item is None:
-                    self.report({"ERROR"}, "原光环定义已不存在")
-                    return {"CANCELLED"}
-                if target == "startup":
-                    item.startup_json = payload
-                elif target == "shutdown":
-                    item.shutdown_json = payload
-                else:
-                    item.animation_json = payload
             self.report({"INFO"}, "动画 JSON 已应用")
             return {"FINISHED"}
 
@@ -2503,8 +2499,20 @@ if bpy is not None:
         bl_label = "返回 3D 视图"
 
         def execute(self, context):
+            text = getattr(getattr(context, "space_data", None), "text", None)
+            if text is None or not text.get("halo_animation_editor"):
+                name = context.scene.halo_project.animation_text_name
+                text = bpy.data.texts.get(name) if name else None
+            if text is not None and text.get("halo_animation_editor"):
+                try:
+                    from .animation_text import apply_animation_text
+                    apply_animation_text(context.scene, text)
+                except ValueError as exc:
+                    self.report({"ERROR"}, str(exc))
+                    return {"CANCELLED"}
             if context.area is not None:
                 context.area.type = "VIEW_3D"
+            self.report({"INFO"}, "动画 JSON 已应用并返回 3D 视图")
             return {"FINISHED"}
 
 

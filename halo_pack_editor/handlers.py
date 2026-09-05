@@ -590,9 +590,11 @@ if bpy is not None:
         for scene in bpy.data.scenes:
             try:
                 from .blender_scene import enforce_managed_transform_locks, update_preview_roots
+                from .animation_text import apply_pending_animation_texts
                 from .resource_store import ensure_resources
                 from .materials import refresh_halo_material_settings
                 ensure_resources(scene, restore_saved=True)
+                apply_pending_animation_texts(scene, refresh=False)
                 enforce_managed_transform_locks(scene, restore=True)
                 refresh_halo_material_settings()
                 # Rebuild the non-animated anchor pose before evaluating files
@@ -607,9 +609,13 @@ if bpy is not None:
 
     @persistent
     def halo_save_pre(_dummy):
+        from .animation_text import apply_pending_animation_texts
         from .resource_store import embed_resources
         for scene in bpy.data.scenes:
             try:
+                animation_result = apply_pending_animation_texts(scene, refresh=False)
+                for warning in animation_result["errors"]:
+                    print("Halo 动画 JSON 保存警告:", warning)
                 report = embed_resources(scene)
                 for warning in report["warnings"]:
                     print("Halo 资源保存警告:", warning)
