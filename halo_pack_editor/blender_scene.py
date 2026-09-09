@@ -1195,19 +1195,31 @@ def _remove_staged_definition_files(destination: Path) -> None:
             definition_path.unlink()
 
 
+def definition_output_relative(definition_id: str) -> str:
+    """Return the canonical definition path derived only from its resource ID.
+
+    Source packs often call every definition ``halo.json``.  Keeping that
+    source filename makes a merged export overwrite definitions, so the ID is
+    authoritative for both the namespace directory and JSON filename.
+    """
+
+    namespace = _namespace(definition_id)
+    name = definition_id.split(":", 1)[-1]
+    filename = _safe_name(name) + ".json"
+    return f"assets/{namespace}/halo_definitions/{filename}"
+
+
+def definition_output_collisions(definition_ids: Iterable[str]) -> dict[str, list[str]]:
+    by_path: dict[str, list[str]] = {}
+    for definition_id in definition_ids:
+        path = definition_output_relative(str(definition_id))
+        by_path.setdefault(path, []).append(str(definition_id))
+    return {path: ids for path, ids in by_path.items() if len(ids) > 1}
+
+
 def _definition_output_path(destination: Path, item, definition_id: str) -> Path:
-    relative = str(item.source_path or "").replace("\\", "/").lstrip("/")
-    source_namespace = relative.split("/", 2)[1] if relative.startswith("assets/") and relative.count("/") >= 2 else ""
-    target_namespace = _namespace(definition_id)
-    if relative.startswith("assets/") and relative.endswith(".json") and ".." not in Path(relative).parts and source_namespace == target_namespace:
-        candidate = destination / relative
-    elif relative.startswith("assets/") and relative.endswith(".json") and ".." not in Path(relative).parts:
-        # The JSON id is authoritative.  Keep the authored filename while
-        # moving the definition into the namespace named by its new id.
-        candidate = destination / "assets" / target_namespace / "halo_definitions" / Path(relative).name
-    else:
-        filename = _safe_name(definition_id.split(":", 1)[-1]) + ".json"
-        candidate = destination / "assets" / target_namespace / "halo_definitions" / filename
+    del item  # Kept in the signature for compatibility with older callers.
+    candidate = destination / Path(*PurePosixPath(definition_output_relative(definition_id)).parts)
     candidate.parent.mkdir(parents=True, exist_ok=True)
     return candidate
 
@@ -1292,6 +1304,14 @@ def export_pack_from_scene(scene, target_path: str | os.PathLike[str], zip_outpu
                 hierarchy_errors.append(f"{obj.name}: 跨光环父级")
     if hierarchy_errors:
         raise ValueError("导出前验证失败：" + "；".join(hierarchy_errors[:8]))
+    output_collisions = definition_output_collisions(
+        item.definition_id for item in scene.halo_project.definitions
+    )
+    if output_collisions:
+        details = "；".join(
+            f"{path}: {', '.join(ids)}" for path, ids in sorted(output_collisions.items())
+        )
+        raise ValueError(f"光环定义文件名冲突，请先修改光环 ID：{details}")
     target = Path(target_path).expanduser().resolve()
     source_paths = {
         Path(value).expanduser().resolve()
@@ -1321,7 +1341,6 @@ def export_pack_from_scene(scene, target_path: str | os.PathLike[str], zip_outpu
             pass
         manifest = _complete_manifest(manifest)
         (temporary / "pack.mcmeta").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        used_definition_paths: set[Path] = set()
         exported_documents = []
         for item in scene.halo_project.definitions:
             raw = raw_definitions.get(item.definition_id)
@@ -1331,15 +1350,6 @@ def export_pack_from_scene(scene, target_path: str | os.PathLike[str], zip_outpu
                 except (TypeError, ValueError):
                     continue
             path = _definition_output_path(temporary, item, item.definition_id)
-            if path in used_definition_paths:
-                namespace, name = item.definition_id.split(":", 1) if ":" in item.definition_id else ("minecraft", item.definition_id)
-                path = temporary / "assets" / namespace / "halo_definitions" / (_safe_name(name) + ".json")
-                suffix = 2
-                while path in used_definition_paths:
-                    path = temporary / "assets" / namespace / "halo_definitions" / f"{_safe_name(name)}_{suffix}.json"
-                    suffix += 1
-                path.parent.mkdir(parents=True, exist_ok=True)
-            used_definition_paths.add(path)
             path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             exported_documents.append(raw)
         # The JSON actually written above is authoritative, not stale Images,

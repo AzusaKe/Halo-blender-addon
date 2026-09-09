@@ -53,6 +53,14 @@ NAMESPACE_RE = re.compile(r"^[a-z0-9_.-]+$")
 RESOURCE_PATH_RE = re.compile(r"^[a-z0-9_./-]+$")
 
 
+def _definition_filename(identifier: str) -> str:
+    """Map the resource-path portion of an ID to one portable JSON name."""
+
+    name = identifier.split(":", 1)[-1]
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in name)[:180]
+    return (safe or "halo") + ".json"
+
+
 def _complete_pack_mcmeta(value: Mapping[str, Any] | None) -> dict[str, Any]:
     """Add required Minecraft metadata fields while retaining unknown data."""
 
@@ -245,13 +253,14 @@ class DefinitionAsset:
 
     @property
     def export_path(self) -> str:
-        """Canonical output path, using the JSON ``id`` namespace when valid."""
+        """Canonical output path, using the JSON ``id`` as authority."""
 
         out_namespace = self.namespace
         if self.identifier and ":" in self.identifier:
             candidate = self.identifier.split(":", 1)[0]
             if NAMESPACE_RE.fullmatch(candidate):
                 out_namespace = candidate
+            return f"assets/{out_namespace}/halo_definitions/{_definition_filename(self.identifier)}"
         return f"assets/{out_namespace}/halo_definitions/{PurePosixPath(self.source_path).name}"
 
     @property
@@ -1089,17 +1098,14 @@ def _definition_output_path(definition: Any) -> str:
     explicit = getattr(definition, "export_path", None)
     if isinstance(explicit, str):
         return _canonical_path(explicit)
-    source = _definition_source_path(definition)
-    if source:
-        identifier = getattr(definition, "identifier", getattr(definition, "id", None))
-        namespace = getattr(definition, "namespace", _path_namespace(source))
-        if isinstance(identifier, str) and ":" in identifier and NAMESPACE_RE.fullmatch(identifier.split(":", 1)[0]):
-            namespace = identifier.split(":", 1)[0]
-        return _canonical_path(f"assets/{namespace}/halo_definitions/{PurePosixPath(source).name}")
     identifier = getattr(definition, "identifier", getattr(definition, "id", None))
     if isinstance(identifier, str) and _valid_identifier(identifier):
-        namespace, name = identifier.split(":", 1)
-        return _canonical_path(f"assets/{namespace}/halo_definitions/{PurePosixPath(name).name}.json")
+        namespace, _name = identifier.split(":", 1)
+        return _canonical_path(f"assets/{namespace}/halo_definitions/{_definition_filename(identifier)}")
+    source = _definition_source_path(definition)
+    if source:
+        namespace = getattr(definition, "namespace", _path_namespace(source))
+        return _canonical_path(f"assets/{namespace}/halo_definitions/{PurePosixPath(source).name}")
     raise PackIOError("Definition needs source_path or a valid id before export")
 
 
@@ -1115,6 +1121,18 @@ def _export_entries(project: PackProject | Any) -> dict[str, bytes]:
         entries[path] = bytes(value)
 
     definitions = _definition_list(project)
+    output_paths: dict[str, Any] = {}
+    for definition in definitions:
+        output_path = _definition_output_path(definition)
+        previous = output_paths.get(output_path)
+        if previous is not None:
+            previous_id = getattr(previous, "identifier", getattr(previous, "id", "<unknown>"))
+            current_id = getattr(definition, "identifier", getattr(definition, "id", "<unknown>"))
+            raise PackIOError(
+                f"Definition filename collision at {output_path}: {previous_id}, {current_id}; rename a definition id"
+            )
+        output_paths[output_path] = definition
+
     used_paths = set(entries)
     for definition in definitions:
         data = _definition_ast(definition)
@@ -1125,20 +1143,10 @@ def _export_entries(project: PackProject | Any) -> dict[str, bytes]:
             if not source:
                 raise
             output_path = _canonical_path(source)
-        # Keep unknown non-definition files safe if a mismatched namespace would
-        # otherwise collide.  Valid definition paths take precedence only over
-        # the source definition itself.
         if output_path in used_paths and output_path != _definition_source_path(definition):
-            stem = PurePosixPath(output_path).stem
-            suffix = PurePosixPath(output_path).suffix
-            parent = PurePosixPath(output_path).parent
-            index = 1
-            while True:
-                candidate = (parent / f"{stem}_{index}{suffix}").as_posix()
-                if candidate not in used_paths:
-                    output_path = candidate
-                    break
-                index += 1
+            raise PackIOError(
+                f"Definition output collides with an existing pack file: {output_path}; rename the definition id"
+            )
         entries[output_path] = dumps(data, newline=True).encode("utf-8")
         used_paths.add(output_path)
 

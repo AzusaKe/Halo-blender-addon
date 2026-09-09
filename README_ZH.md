@@ -21,7 +21,7 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 
 1. 使用 Blender 5.2 LTS 或更新版本。
 2. 打开“编辑 → 偏好设置 → 扩展”，选择“从磁盘安装”。
-3. 选择 `halo_pack_editor-0.3.6.zip` 并启用扩展。
+3. 选择 `halo_pack_editor-0.3.7.zip` 并启用扩展。
 4. 在 3D 视图按 `N`，打开“Halo 光环”标签页。
 
 ## 保存工程与修复旧贴图（0.3.2）
@@ -106,7 +106,7 @@ JSON 会统一输出为 UTF-8、两空格缩进；不保证原始空白逐字节
 ```powershell
 python -m unittest discover -s tests -p 'test_*.py' -v
 blender --command extension validate halo_pack_editor
-blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.3.6.zip
+blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.3.7.zip
 ```
 
 Blender 后台集成测试脚本位于 `scripts/`。测试与下载缓存应放在 `F:\codex-cache\halo-blender-addon`，扩展自身不会依赖该路径。

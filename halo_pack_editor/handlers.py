@@ -569,6 +569,54 @@ def update_animation(scene):
     update_face_camera(scene)
 
 
+def preview_duration(scene, mode: str) -> float:
+    """Use authored transition queues rather than the generic UI fallback."""
+    project = scene.halo_project
+    if mode == "IDLE":
+        return 5.0
+    maximum = 0.0
+    for root in scene.objects:
+        if root.get("halo_role") != "definition_root" or root.hide_viewport:
+            continue
+        try:
+            definition = _core_parse_definition(
+                _definition_raw(scene, root),
+                source_path=root.get("halo_source_path", ""),
+                namespace=str(root.get("halo_definition_id", "minecraft:halo")).split(":", 1)[0],
+            )
+            startup = float(getattr(getattr(definition, "startup", None), "max_duration", 0.0) or 0.0)
+            shutdown_config = getattr(definition, "shutdown", None)
+            shutdown = float(getattr(shutdown_config, "max_duration", 0.0) or 0.0)
+            if shutdown <= 0.0:
+                shutdown = startup  # The mod reverses startup when shutdown is absent.
+            if mode == "STARTUP":
+                maximum = max(maximum, startup)
+            elif mode == "SHUTDOWN":
+                maximum = max(maximum, shutdown)
+            else:
+                maximum = max(maximum, startup + max(0.0, float(project.transition_duration)) + shutdown)
+        except Exception:
+            continue
+    if maximum > 0.0:
+        return maximum
+    return max(0.01, float(project.transition_duration))
+
+
+def prepare_preview_playback(scene, mode: str) -> float:
+    """Reset the timeline and evaluate the first frame before playback starts."""
+
+    project = scene.halo_project
+    project.preview_mode = mode
+    fps = max(1, int(project.preview_fps))
+    scene.render.fps = fps
+    scene.frame_start = 1
+    duration = preview_duration(scene, mode)
+    scene.frame_end = max(2, 1 + int(fps * duration + 1e-6))
+    scene.frame_set(scene.frame_start)
+    update_animation(scene)
+    return duration
+
+
 if bpy is not None:
 
     @persistent
@@ -703,6 +751,8 @@ __all__ = [
     "transition_duration",
     "update_face_camera",
     "update_animation",
+    "preview_duration",
+    "prepare_preview_playback",
     "register_handlers",
     "unregister_handlers",
 ]

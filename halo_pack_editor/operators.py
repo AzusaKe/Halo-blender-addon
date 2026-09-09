@@ -689,6 +689,12 @@ def validate_scene(scene) -> dict[str, list[str]]:
         for key, label in (("animation", "常驻动画"), ("startup", "启动动画"), ("shutdown", "关闭动画")):
             if item.get(f"halo_invalid_{key}_json"):
                 errors.append(f"{item.definition_id}: {label} JSON 无法解析")
+    for path, definition_ids in blender_scene.definition_output_collisions(
+        item.definition_id for item in definitions
+    ).items():
+        errors.append(
+            f"光环定义文件名冲突 {path}: {', '.join(definition_ids)}；请修改光环 ID"
+        )
     result = {"errors": errors, "warnings": warnings}
     scene.halo_project.validation_json = json.dumps(result, ensure_ascii=False, indent=2)
     return result
@@ -1666,7 +1672,9 @@ if bpy is not None:
                     self.report({"ERROR"}, "无法建立贴图资源目录，请先修复项目资源")
                     return {"CANCELLED"}
             old_id = (node.inner_texture if self.target == "INNER" else node.texture) or node.texture or "minecraft:textures/halo/imported.png"
-            namespace, relative = split_resource_id(old_id)
+            _old_namespace, relative = split_resource_id(old_id)
+            definition_id = str(obj.get("halo_definition_id", ""))
+            namespace = definition_id.split(":", 1)[0] if ":" in definition_id else "minecraft"
             filename = Path(self.filepath).name
             if not relative or relative.endswith("/"):
                 relative = "textures/halo/" + filename
@@ -1876,17 +1884,16 @@ if bpy is not None:
         mode: EnumProperty(name="模式", items=(("IDLE", "常驻", ""), ("STARTUP", "启动", ""), ("SHUTDOWN", "关闭", ""), ("SEQUENCE", "完整序列", "")), default="IDLE")
 
         def execute(self, context):
-            project = context.scene.halo_project
             try:
                 from .animation_text import apply_pending_animation_texts
                 apply_pending_animation_texts(context.scene, strict=True, refresh=False)
             except ValueError as exc:
                 self.report({"ERROR"}, str(exc))
                 return {"CANCELLED"}
-            project.preview_mode = self.mode
-            context.scene.render.fps = int(project.preview_fps)
-            context.scene.frame_start = 1
-            context.scene.frame_end = max(2, int(project.preview_fps * (project.transition_duration if self.mode != "IDLE" else 5.0)))
+            from .handlers import prepare_preview_playback
+            if context.screen is not None and context.screen.is_animation_playing:
+                bpy.ops.screen.animation_cancel(restore_frame=False)
+            prepare_preview_playback(context.scene, self.mode)
             bpy.ops.screen.animation_play()
             return {"FINISHED"}
 

@@ -163,6 +163,33 @@ class PackIOTests(unittest.TestCase):
                 self.assertIn("unknown.bin", archive.namelist())
                 self.assertEqual(json.loads(archive.read("pack.mcmeta"))["custom"], "保留")
 
+    def test_export_definition_filename_follows_id_and_rejects_collisions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source"
+            (source / "assets/trinity/halo_definitions").mkdir(parents=True)
+            (source / "assets/trinity/halo_definitions/halo.json").write_text(
+                json.dumps(definition("trinity:serina")), encoding="utf-8"
+            )
+            project = import_pack(source)
+            output = Path(tmp) / "output"
+            export_folder(project, output)
+            self.assertTrue((output / "assets/trinity/halo_definitions/serina.json").is_file())
+            self.assertFalse((output / "assets/trinity/halo_definitions/halo.json").exists())
+
+            project.definitions[0].identifier = "trinity:path/serina"
+            project.definitions[0].document.set("id", "trinity:path/serina")
+            duplicate = type(project.definitions[0])(
+                namespace="trinity",
+                name="other.json",
+                source_path="assets/trinity/halo_definitions/other.json",
+                document=JsonDocument(definition("trinity:path_serina")),
+                identifier="trinity:path_serina",
+                raw_bytes=b"{}",
+            )
+            project.definitions.append(duplicate)
+            with self.assertRaisesRegex(PackIOError, "filename collision"):
+                export_folder(project, Path(tmp) / "collision")
+
     def test_export_completes_missing_description_without_overwriting_custom_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "pack"

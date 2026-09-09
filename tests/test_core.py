@@ -30,6 +30,7 @@ from halo_pack_editor.core import (
     rotation_effective_end,
     validate_definition,
 )
+from halo_pack_editor.core.animation import evaluate_definition_transition
 
 
 class CoreModelTests(unittest.TestCase):
@@ -92,6 +93,21 @@ class CoreModelTests(unittest.TestCase):
         self.assertAlmostEqual(animation.rotation.elements[0].end_value[0], 390.0)
         self.assertAlmostEqual(rotation_effective_end(0, 30, 90), 390.0)
 
+    def test_empty_shutdown_reverses_startup_per_mod_behavior(self):
+        definition = parse_definition({
+            "id": "trinity:serina",
+            "layers": [{"id": "serina"}],
+            "startup": {"id_overrides": {"serina": {"segments": [{
+                "duration": 0.5,
+                "scale": {"from": [0, 0, 0]},
+            }]}}},
+            "shutdown": {},
+        })
+        start = evaluate_definition_transition(definition, "serina", 0.0, startup=False)
+        end = evaluate_definition_transition(definition, "serina", 0.5, startup=False)
+        self.assertEqual(start.scale, (1.0, 1.0, 1.0))
+        self.assertEqual(end.scale, (0.0, 0.0, 0.0))
+
     def test_coordinate_change_and_transform_conjugation(self):
         self.assertEqual(mc_to_blender((1, 2, 3)), (1, -3, 2))
         self.assertEqual(blender_to_mc((1, -3, 2)), (1, 2, 3))
@@ -119,4 +135,3 @@ class CoreModelTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

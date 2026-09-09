@@ -1018,13 +1018,16 @@ def transition_result_for(
     """Resolve and evaluate startup/shutdown including inversion fallback."""
 
     config = definition.startup if startup else definition.shutdown
+    animation = config.animation_for_group(group_id) if config is not None else None
     reversed_fallback = False
-    if not startup and config is None:
-        config = definition.startup
-        reversed_fallback = config is not None
-    if config is None:
-        return TransitionResult()
-    animation = config.animation_for_group(group_id)
+    # ``shutdown: {}`` is semantically the same as an omitted shutdown in the
+    # mod: if this node has no shutdown queue, play its startup queue backwards.
+    # Decide per node so a partial id_overrides map can still fall back for
+    # groups without an explicit shutdown override.
+    if not startup and animation is None:
+        fallback = definition.startup
+        animation = fallback.animation_for_group(group_id) if fallback is not None else None
+        reversed_fallback = animation is not None
     if animation is None:
         return TransitionResult()
     if reversed_fallback:
