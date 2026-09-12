@@ -229,7 +229,8 @@ def ensure_resources(scene, *, restore_saved=False, rebind=True):
     or an older save must not overwrite another open project's editable cache.
     """
     from . import blender_scene
-    from .materials import assign_primitive_materials, load_texture_image
+    from .materials import assign_mesh_material, assign_primitive_materials, load_texture_image
+    from .obj_mesh import resolve_model_path
     project = scene.halo_project
     upgrade_legacy_sources(scene)
     report = {"restored_sources": 0, "packed_images": 0, "warnings": []}
@@ -310,15 +311,29 @@ def ensure_resources(scene, *, restore_saved=False, rebind=True):
             continue
         node = obj.halo_node
         pack_root = blender_scene.definition_pack_root(scene, obj.get("halo_definition_id", ""))
-        for texture_id in {node.texture, node.inner_texture if node.primitive_type == "ring" else ""} - {""}:
+        texture_ids = {node.texture, node.inner_texture if node.primitive_type == "ring" else ""}
+        if node.primitive_type == "mesh" and node.mesh_mask_enabled:
+            texture_ids.add(node.mesh_mask_texture)
+        for texture_id in texture_ids - {""}:
             image = load_texture_image(texture_id, pack_root)
             if image.get("halo_missing_texture"):
                 report["warnings"].append(f"{obj.name}：缺失 {texture_id}，请重新链接 PNG")
+        if node.primitive_type == "mesh" and resolve_model_path(node.mesh_model, pack_root) is None:
+            report["warnings"].append(f"{obj.name}：缺失 {node.mesh_model}，请重新链接 OBJ")
         if rebind:
             parent_node = getattr(obj.parent, "halo_node", None)
-            assign_primitive_materials(obj, node.texture, node.inner_texture or None,
-                                       pack_root,
-                                       glowing=bool(parent_node.glowing) if parent_node else True)
+            glowing = bool(parent_node.glowing) if parent_node else True
+            if node.primitive_type == "mesh":
+                assign_mesh_material(
+                    obj, node.texture, pack_root, glowing=glowing,
+                    double_sided=bool(node.mesh_double_sided),
+                    mask_texture_id=node.mesh_mask_texture if node.mesh_mask_enabled else "",
+                    mask_mode=node.mesh_mask_mode,
+                    mask_threshold=node.mesh_mask_threshold,
+                )
+            else:
+                assign_primitive_materials(obj, node.texture, node.inner_texture or None,
+                                           pack_root, glowing=glowing)
     project["halo_resource_warnings"] = json.dumps(report["warnings"], ensure_ascii=False)
     return report
 

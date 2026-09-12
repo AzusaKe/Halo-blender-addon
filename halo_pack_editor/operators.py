@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import Any, Mapping
@@ -35,13 +37,17 @@ from .blender_scene import (
 )
 from .geometry import billboard_mesh, mc_rotation_quaternion, ring_mesh
 from .materials import (
+    assign_mesh_material,
     assign_primitive_materials,
     copy_texture_with_sidecars,
+    mesh_mask_resolution_warning,
     refresh_halo_material_settings,
     split_resource_id,
 )
 from .mesh_conversion import convert_mesh_to_halo, iter_mesh_conversion
+from .obj_mesh import build_blender_mesh, copy_obj_resource, load_obj_resource
 from .properties import EASING_ITEMS, TRANSITION_DEFAULT_GROUP
+from .core.resource_paths import lowercase_resource_identifier
 
 
 def _active_object(context):
@@ -455,6 +461,76 @@ def _animation_terms(animation, channel, create=False):
     return parent.get(axis) if isinstance(parent.get(axis), list) else None
 
 
+def _active_mesh_primitive(context):
+    obj = _active_object(context)
+    if (obj is None or obj.get("halo_role") != PRIMITIVE_ROLE
+            or getattr(obj.halo_node, "primitive_type", "") != "mesh"):
+        return None
+    return obj
+
+
+def _mesh_mask_terms(context, *, create=False):
+    """Return ``(object, raw, terms)`` for the selected mask U/V channel."""
+
+    obj = _active_mesh_primitive(context)
+    if obj is None:
+        raise ValueError("请选择一个 Mesh 图元")
+    raw = blender_scene._sync_primitive(obj)
+    material = raw.get("material")
+    if not isinstance(material, dict):
+        if not create:
+            return obj, raw, []
+        material = {}
+        raw["material"] = material
+    effects = material.get("effects")
+    if not isinstance(effects, list):
+        if not create:
+            return obj, raw, []
+        effects = []
+        material["effects"] = effects
+    mask = next((value for value in effects if isinstance(value, dict)
+                 and str(value.get("type", "")) == "alpha_mask"), None)
+    if mask is None:
+        if not create:
+            return obj, raw, []
+        mask = {
+            "type": "alpha_mask",
+            "texture": obj.halo_node.mesh_mask_texture,
+            "mode": obj.halo_node.mesh_mask_mode,
+            "threshold": float(obj.halo_node.mesh_mask_threshold),
+        }
+        effects.append(mask)
+        obj.halo_node.mesh_mask_enabled = True
+    uv_offset = mask.get("uv_offset")
+    if not isinstance(uv_offset, dict):
+        if not create:
+            return obj, raw, []
+        uv_offset = {}
+        mask["uv_offset"] = uv_offset
+    axis = str(context.scene.halo_project.mesh_mask_axis or "u").lower()
+    terms = uv_offset.get(axis)
+    if not isinstance(terms, list):
+        if not create:
+            return obj, raw, []
+        terms = []
+        uv_offset[axis] = terms
+    return obj, raw, terms
+
+
+def _store_mesh_primitive(context, obj, raw):
+    payload = json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
+    obj["halo_primitive_raw_json"] = payload
+    obj["halo_raw_json"] = payload
+    obj.halo_node.raw_json = json.dumps(raw, ensure_ascii=False, indent=2)
+    _set_node_mesh(obj)
+    sync_definition_from_scene(context.scene, obj.get("halo_definition_id", ""))
+    try:
+        from .handlers import update_animation
+        update_animation(context.scene)
+    except Exception:
+        pass
+
+
 def _transition_definition(context):
     project = context.scene.halo_project
     return next((item for item in project.definitions if item.definition_id == project.active_definition), None)
@@ -585,9 +661,25 @@ def _set_node_mesh(obj):
     node = getattr(obj, "halo_node", None)
     if node is None or obj.get("halo_role") != PRIMITIVE_ROLE:
         return False
+    raw = blender_scene._sync_primitive(obj)
     old_mesh = obj.data
+    model_error = ""
     if node.primitive_type == "ring":
         obj.data = ring_mesh(obj.name, node.size, node.segments, False)
+    elif node.primitive_type == "mesh":
+        pack_root = blender_scene.definition_pack_root(bpy.context.scene, obj.get("halo_definition_id", ""))
+        try:
+            source = load_obj_resource(node.mesh_model, pack_root)
+            obj.data = build_blender_mesh(
+                obj.name,
+                source,
+                node.mesh_size,
+                preserve_proportions=bool(node.mesh_preserve_proportions),
+                scale=float(node.mesh_scale),
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            obj.data = billboard_mesh(obj.name + " · missing OBJ", (0.25, 0.25))
+            model_error = str(exc)
     else:
         obj.data = billboard_mesh(obj.name, node.size)
     if old_mesh and old_mesh.users == 0:
@@ -596,7 +688,28 @@ def _set_node_mesh(obj):
     pack_root = blender_scene.definition_pack_root(bpy.context.scene, obj.get("halo_definition_id", ""))
     group_node = getattr(obj.parent, "halo_node", None) if obj.parent is not None else None
     glowing = bool(group_node.glowing) if group_node is not None else True
-    assign_primitive_materials(obj, node.texture, node.inner_texture or None, pack_root, glowing=glowing)
+    if node.primitive_type == "mesh":
+        material = raw.get("material") if isinstance(raw.get("material"), Mapping) else {}
+        effects = material.get("effects") if isinstance(material.get("effects"), list) else []
+        mask = next((effect for effect in effects if isinstance(effect, Mapping)
+                     and str(effect.get("type", "")) == "alpha_mask"), None)
+        assign_mesh_material(
+            obj, node.texture, pack_root, glowing=glowing,
+            double_sided=bool(node.mesh_double_sided),
+            mask_texture_id=node.mesh_mask_texture if node.mesh_mask_enabled else "",
+            mask_mode=node.mesh_mask_mode,
+            mask_threshold=node.mesh_mask_threshold,
+        )
+        if model_error:
+            obj["halo_missing_model"] = True
+            obj["halo_model_error"] = model_error
+        else:
+            obj.pop("halo_missing_model", None)
+            obj.pop("halo_model_error", None)
+    else:
+        assign_primitive_materials(obj, node.texture, node.inner_texture or None, pack_root, glowing=glowing)
+        obj.pop("halo_missing_model", None)
+        obj.pop("halo_model_error", None)
     obj["halo_face_camera"] = bool(node.face_camera)
     obj["halo_raw_json"] = obj.get("halo_primitive_raw_json", obj.get("halo_raw_json", "{}"))
     return True
@@ -679,7 +792,33 @@ def validate_scene(scene) -> dict[str, list[str]]:
                     continue
                 if node.primitive_type == "ring" and node.segments < 3:
                     errors.append(f"{obj.name}: ring segments 至少为 3")
-                if node.size[0] <= 0.0 or node.size[1] <= 0.0:
+                if node.primitive_type == "mesh":
+                    if not node.mesh_model:
+                        errors.append(f"{obj.name}: Mesh 缺少 OBJ 模型资源 ID")
+                    elif not re.fullmatch(r"[a-z0-9_.-]+:[a-z0-9_./-]+", node.mesh_model):
+                        errors.append(f"{obj.name}: Mesh OBJ 资源 ID 必须使用小写 namespace:path")
+                    elif not node.mesh_model.endswith(".obj"):
+                        errors.append(f"{obj.name}: Mesh 模型资源必须以 .obj 结尾")
+                    if node.mesh_preserve_proportions:
+                        if not math.isfinite(node.mesh_scale) or node.mesh_scale < 0.0:
+                            errors.append(f"{obj.name}: Mesh 统一缩放必须是有限非负数")
+                    elif any(not math.isfinite(value) or value < 0.0 for value in node.mesh_size):
+                        errors.append(f"{obj.name}: Mesh size 必须为三个有限非负数")
+                    if obj.get("halo_missing_model"):
+                        warnings.append(f"{obj.name}: {obj.get('halo_model_error', 'OBJ 不存在或格式无效')}")
+                    if node.mesh_mask_enabled:
+                        if not node.mesh_mask_texture:
+                            errors.append(f"{obj.name}: Alpha Mask 已启用但缺少遮罩纹理")
+                        if node.mesh_mask_mode not in {"linear", "step"}:
+                            errors.append(f"{obj.name}: Alpha Mask 模式必须为 linear 或 step")
+                        if not 0.0 <= node.mesh_mask_threshold <= 1.0:
+                            errors.append(f"{obj.name}: Alpha Mask 阈值必须在 0 到 1 之间")
+                        material = obj.data.materials[0] if getattr(obj.data, "materials", None) else None
+                        resolution_warning = mesh_mask_resolution_warning(material)
+                        message = f"{obj.name}: {resolution_warning}" if resolution_warning else ""
+                        if message and message not in warnings:
+                            warnings.append(message)
+                elif node.size[0] <= 0.0 or node.size[1] <= 0.0:
                     warnings.append(f"{obj.name}: 图元尺寸包含非正值")
                 if not node.texture:
                     warnings.append(f"{obj.name}: 缺少纹理资源 ID")
@@ -727,7 +866,7 @@ if bpy is not None:
             if self.with_default_halo:
                 raw = {
                     "id": "minecraft:halo",
-                    "version": "1.0.10",
+                    "version": "1.1.0",
                     "orientation_mode": "locked",
                     "layers": [{
                         "id": "halo",
@@ -772,7 +911,7 @@ if bpy is not None:
             namespace, path = definition_id.split(":", 1)
             raw = {
                 "id": definition_id,
-                "version": "1.0.10",
+                "version": "1.1.0",
                 "orientation_mode": "locked",
                 "layers": [],
                 "animation": {},
@@ -959,7 +1098,12 @@ if bpy is not None:
         bl_label = "添加图元"
         bl_options = {"REGISTER", "UNDO"}
 
-        primitive_type: EnumProperty(name="类型", items=(("billboard", "Billboard", "水平四边形"), ("ring", "Ring", "圆环")), default="billboard")
+        primitive_type: EnumProperty(
+            name="类型",
+            items=(("billboard", "Billboard", "水平四边形"), ("ring", "Ring", "圆环"),
+                   ("mesh", "Mesh", "Halo 2.0 OBJ 网格")),
+            default="billboard",
+        )
         texture: StringProperty(name="纹理 ID", default="minecraft:textures/halo/example.png")
 
         def invoke(self, context, event):
@@ -977,6 +1121,16 @@ if bpy is not None:
             primitive = {"type": self.primitive_type, "texture": self.texture, "size": [1.0, 1.0]}
             if self.primitive_type == "ring":
                 primitive = {"type": "ring", "texture": self.texture, "size": [0.5, 0.05], "segments": 64}
+            elif self.primitive_type == "mesh":
+                namespace = str(parent.get("halo_definition_id", "minecraft:halo")).split(":", 1)[0]
+                primitive = {
+                    "type": "mesh",
+                    "model": f"{namespace}:models/halo/model.obj",
+                    "texture": f"{namespace}:textures/halo/model.png",
+                    "size": [1.0, 1.0, 1.0],
+                    "preserve_proportions": False,
+                    "scale": 1.0,
+                }
             parent_node = getattr(parent, "halo_node", None)
             glowing = bool(parent_node.glowing) if parent_node is not None else True
             obj = blender_scene._make_primitive(collection, parent, primitive, parent.get("halo_definition_id", ""), f"manual/primitive/{uuid.uuid4().hex[:8]}", glowing)
@@ -1631,9 +1785,45 @@ if bpy is not None:
         def execute(self, context):
             obj = _active_object(context)
             if obj is None or obj.get("halo_role") != PRIMITIVE_ROLE:
-                self.report({"ERROR"}, "请选择 Billboard 或 Ring 图元")
+                self.report({"ERROR"}, "请选择 Billboard、Ring 或 Mesh 图元")
                 return {"CANCELLED"}
             _set_node_mesh(obj)
+            return {"FINISHED"}
+
+
+    class HALO_OT_import_mesh_model(bpy.types.Operator, ImportHelper):
+        bl_idname = "halo.import_mesh_model"
+        bl_label = "导入/重链接 OBJ"
+        bl_description = "验证 Halo 2.0 OBJ 子集并复制到当前光环命名空间"
+        bl_options = {"REGISTER", "UNDO"}
+        filename_ext = ".obj"
+        filter_glob: StringProperty(default="*.obj", options={"HIDDEN"})
+
+        def execute(self, context):
+            obj = _active_mesh_primitive(context)
+            if obj is None:
+                self.report({"ERROR"}, "请先选择一个 Mesh 图元")
+                return {"CANCELLED"}
+            pack_root = blender_scene.definition_pack_root(context.scene, obj.get("halo_definition_id", ""))
+            if not pack_root or not os.path.isdir(pack_root):
+                from .resource_store import ensure_resources
+                ensure_resources(context.scene)
+                pack_root = blender_scene.definition_pack_root(context.scene, obj.get("halo_definition_id", ""))
+            if not pack_root or not os.path.isdir(pack_root):
+                self.report({"ERROR"}, "无法建立 OBJ 资源目录，请先修复项目资源")
+                return {"CANCELLED"}
+            namespace = str(obj.get("halo_definition_id", "minecraft:halo")).split(":", 1)[0]
+            stem = re.sub(r"[^a-z0-9_.-]+", "_", Path(self.filepath).stem.lower()).strip("._") or "model"
+            requested = f"{namespace}:models/halo/{stem}.obj"
+            try:
+                model_id, _destination = copy_obj_resource(self.filepath, pack_root, requested)
+            except (OSError, UnicodeError, ValueError) as exc:
+                self.report({"ERROR"}, f"无法导入 OBJ：{exc}")
+                return {"CANCELLED"}
+            obj.halo_node.mesh_model = model_id
+            _set_node_mesh(obj)
+            sync_definition_from_scene(context.scene, obj.get("halo_definition_id", ""))
+            self.report({"INFO"}, f"已链接 OBJ {model_id}")
             return {"FINISHED"}
 
 
@@ -1645,7 +1835,9 @@ if bpy is not None:
         filter_glob: StringProperty(default="*.png", options={"HIDDEN"})
         target: EnumProperty(
             name="材质面",
-            items=(("OUTER", "外侧", "Billboard 或 Ring 外侧纹理"), ("INNER", "内侧", "Ring 内侧纹理")),
+            items=(("OUTER", "主纹理", "Billboard、Ring 外侧或 Mesh 主纹理"),
+                   ("INNER", "内侧", "Ring 内侧纹理"),
+                   ("MASK", "Alpha Mask", "Mesh alpha_mask 遮罩纹理")),
             default="OUTER",
             options={"HIDDEN"},
         )
@@ -1662,6 +1854,9 @@ if bpy is not None:
             if self.target == "INNER" and node.primitive_type != "ring":
                 self.report({"ERROR"}, "只有 Ring 图元支持独立内侧纹理")
                 return {"CANCELLED"}
+            if self.target == "MASK" and node.primitive_type != "mesh":
+                self.report({"ERROR"}, "只有 Mesh 图元支持 Alpha Mask 纹理")
+                return {"CANCELLED"}
             project = context.scene.halo_project
             pack_root = blender_scene.definition_pack_root(context.scene, obj.get("halo_definition_id", ""))
             if not pack_root or not os.path.isdir(pack_root):
@@ -1671,16 +1866,18 @@ if bpy is not None:
                 if not pack_root or not os.path.isdir(pack_root):
                     self.report({"ERROR"}, "无法建立贴图资源目录，请先修复项目资源")
                     return {"CANCELLED"}
-            old_id = (node.inner_texture if self.target == "INNER" else node.texture) or node.texture or "minecraft:textures/halo/imported.png"
+            old_id = (node.inner_texture if self.target == "INNER" else
+                      node.mesh_mask_texture if self.target == "MASK" else node.texture)
+            old_id = old_id or node.texture or "minecraft:textures/halo/imported.png"
             _old_namespace, relative = split_resource_id(old_id)
             definition_id = str(obj.get("halo_definition_id", ""))
             namespace = definition_id.split(":", 1)[0] if ":" in definition_id else "minecraft"
-            filename = Path(self.filepath).name
+            filename = Path(self.filepath).name.lower()
             if not relative or relative.endswith("/"):
                 relative = "textures/halo/" + filename
             else:
                 relative = relative.rsplit("/", 1)[0] + "/" + filename if "/" in relative else "textures/halo/" + filename
-            texture_id = f"{namespace}:{relative}"
+            texture_id = lowercase_resource_identifier(f"{namespace}:{relative}")
             assets_root = Path(pack_root).resolve() / "assets" / namespace
             reuse_candidates = []
             for image in bpy.data.images:
@@ -1705,12 +1902,21 @@ if bpy is not None:
             if self.target == "INNER":
                 node.inner_texture = texture_id
                 obj["halo_inner_texture_id"] = texture_id
+            elif self.target == "MASK":
+                node.mesh_mask_enabled = True
+                node.mesh_mask_texture = texture_id
+                obj["halo_mesh_mask_texture_id"] = texture_id
             else:
                 node.texture = texture_id
                 obj["halo_texture_id"] = texture_id
             _set_node_mesh(obj)
-            side = "内侧" if self.target == "INNER" else "外侧"
-            self.report({"INFO"}, f"已链接{side}纹理 {texture_id}")
+            side = "内侧" if self.target == "INNER" else "Alpha Mask" if self.target == "MASK" else "主"
+            material = obj.data.materials[0] if getattr(obj.data, "materials", None) else None
+            resolution_warning = mesh_mask_resolution_warning(material) if node.primitive_type == "mesh" else None
+            if resolution_warning:
+                self.report({"WARNING"}, f"已链接{side}纹理；{resolution_warning}")
+            else:
+                self.report({"INFO"}, f"已链接{side}纹理 {texture_id}")
             return {"FINISHED"}
 
 
@@ -2032,6 +2238,129 @@ if bpy is not None:
                 return {"CANCELLED"}
             owner.animation_json = json.dumps(animation, ensure_ascii=False, indent=2)
             context.scene.halo_project.animation_term_index = new
+            return {"FINISHED"}
+
+
+    class HALO_OT_mesh_mask_term_add(bpy.types.Operator):
+        bl_idname = "halo.mesh_mask_term_add"
+        bl_label = "添加遮罩 UV 动画项"
+        bl_options = {"REGISTER", "UNDO"}
+
+        function: EnumProperty(name="函数", items=(("sin", "sin", ""), ("cos", "cos", ""), ("linear", "linear", "")), default="linear")
+        amplitude: FloatProperty(name="A", default=1.0)
+        omega: FloatProperty(name="omega", default=1.0)
+        phi: FloatProperty(name="phi", default=0.0)
+        start: FloatProperty(name="start", default=0.0)
+        speed: FloatProperty(name="speed", default=0.1)
+
+        def invoke(self, context, event):
+            return context.window_manager.invoke_props_dialog(self)
+
+        def draw(self, context):
+            layout = self.layout
+            layout.prop(self, "function")
+            if self.function in {"sin", "cos"}:
+                layout.prop(self, "amplitude")
+                layout.prop(self, "omega")
+                layout.prop(self, "phi")
+            else:
+                layout.prop(self, "start")
+                layout.prop(self, "speed")
+
+        def execute(self, context):
+            try:
+                obj, raw, terms = _mesh_mask_terms(context, create=True)
+            except ValueError as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
+            term = ({"function": self.function, "A": self.amplitude, "omega": self.omega, "phi": self.phi}
+                    if self.function in {"sin", "cos"} else
+                    {"function": "linear", "start": self.start, "speed": self.speed})
+            terms.append(term)
+            context.scene.halo_project.mesh_mask_term_index = len(terms) - 1
+            _store_mesh_primitive(context, obj, raw)
+            return {"FINISHED"}
+
+
+    class HALO_OT_mesh_mask_term_edit(bpy.types.Operator):
+        bl_idname = "halo.mesh_mask_term_edit"
+        bl_label = "编辑遮罩 UV 动画项"
+        bl_options = {"REGISTER", "UNDO"}
+
+        function: EnumProperty(name="函数", items=(("sin", "sin", ""), ("cos", "cos", ""), ("linear", "linear", "")), default="linear")
+        amplitude: FloatProperty(name="A", default=0.0)
+        omega: FloatProperty(name="omega", default=0.0)
+        phi: FloatProperty(name="phi", default=0.0)
+        start: FloatProperty(name="start", default=0.0)
+        speed: FloatProperty(name="speed", default=0.0)
+        index: IntProperty(name="动画项", default=-1, min=-1, options={"HIDDEN"})
+
+        def invoke(self, context, event):
+            try:
+                _obj, _raw, terms = _mesh_mask_terms(context)
+                index = self.index if self.index >= 0 else context.scene.halo_project.mesh_mask_term_index
+                term = terms[index]
+            except (ValueError, IndexError, TypeError):
+                self.report({"ERROR"}, "所选遮罩 UV 动画项不存在")
+                return {"CANCELLED"}
+            self.function = str(term.get("function", "linear"))
+            self.amplitude = float(term.get("A", term.get("amplitude", 0.0)))
+            self.omega = float(term.get("omega", 0.0))
+            self.phi = float(term.get("phi", 0.0))
+            self.start = float(term.get("start", 0.0))
+            self.speed = float(term.get("speed", 0.0))
+            return context.window_manager.invoke_props_dialog(self)
+
+        draw = HALO_OT_mesh_mask_term_add.draw
+
+        def execute(self, context):
+            try:
+                obj, raw, terms = _mesh_mask_terms(context)
+                index = self.index if self.index >= 0 else context.scene.halo_project.mesh_mask_term_index
+                terms[index] = ({"function": self.function, "A": self.amplitude, "omega": self.omega, "phi": self.phi}
+                                if self.function in {"sin", "cos"} else
+                                {"function": "linear", "start": self.start, "speed": self.speed})
+            except (ValueError, IndexError, TypeError):
+                return {"CANCELLED"}
+            _store_mesh_primitive(context, obj, raw)
+            return {"FINISHED"}
+
+
+    class HALO_OT_mesh_mask_term_remove(bpy.types.Operator):
+        bl_idname = "halo.mesh_mask_term_remove"
+        bl_label = "删除遮罩 UV 动画项"
+        bl_options = {"REGISTER", "UNDO"}
+        index: IntProperty(name="动画项", default=-1, min=-1, options={"HIDDEN"})
+
+        def execute(self, context):
+            try:
+                obj, raw, terms = _mesh_mask_terms(context)
+                index = self.index if self.index >= 0 else context.scene.halo_project.mesh_mask_term_index
+                terms.pop(index)
+            except (ValueError, IndexError, TypeError):
+                return {"CANCELLED"}
+            context.scene.halo_project.mesh_mask_term_index = max(0, index - 1)
+            _store_mesh_primitive(context, obj, raw)
+            return {"FINISHED"}
+
+
+    class HALO_OT_mesh_mask_term_move(bpy.types.Operator):
+        bl_idname = "halo.mesh_mask_term_move"
+        bl_label = "移动遮罩 UV 动画项"
+        bl_options = {"REGISTER", "UNDO"}
+        direction: IntProperty(name="方向", default=1)
+        index: IntProperty(name="动画项", default=-1, min=-1, options={"HIDDEN"})
+
+        def execute(self, context):
+            try:
+                obj, raw, terms = _mesh_mask_terms(context)
+                old = self.index if self.index >= 0 else context.scene.halo_project.mesh_mask_term_index
+                new = max(0, min(len(terms) - 1, old + self.direction))
+                terms[old], terms[new] = terms[new], terms[old]
+            except (ValueError, IndexError, TypeError):
+                return {"CANCELLED"}
+            context.scene.halo_project.mesh_mask_term_index = new
+            _store_mesh_primitive(context, obj, raw)
             return {"FINISHED"}
 
 
@@ -2543,6 +2872,7 @@ if bpy is not None:
         HALO_OT_reparent,
         HALO_OT_move_primitive,
         HALO_OT_refresh_geometry,
+        HALO_OT_import_mesh_model,
         HALO_OT_import_texture,
         HALO_OT_clear_inner_texture,
         HALO_OT_pack_resources,
@@ -2559,6 +2889,10 @@ if bpy is not None:
         HALO_OT_animation_term_edit,
         HALO_OT_animation_term_remove,
         HALO_OT_animation_term_move,
+        HALO_OT_mesh_mask_term_add,
+        HALO_OT_mesh_mask_term_edit,
+        HALO_OT_mesh_mask_term_remove,
+        HALO_OT_mesh_mask_term_move,
         HALO_OT_transition_use_active_group,
         HALO_OT_transition_segment_add,
         HALO_OT_transition_segment_edit,

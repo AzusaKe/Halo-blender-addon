@@ -16,7 +16,13 @@ from .schema import (
 )
 from .coordinates import *
 from .animation import *
-from .validation import ValidationIssue, ValidationReport, assert_valid, validate_definition, validate_pack
+from .validation import (
+    ValidationIssue,
+    ValidationReport,
+    assert_valid,
+    has_integral_texture_scale,
+    validate_definition,
+    validate_pack,
+)
 
 __all__ = [name for name in globals() if not name.startswith("_")]
-

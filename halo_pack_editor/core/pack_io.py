@@ -37,8 +37,10 @@ from typing import Any, BinaryIO
 
 try:  # Package import (normal add-on use).
     from .json_codec import JsonCodecError, JsonDocument, clone_ast, dumps, parse_json
+    from .resource_paths import lowercase_resource_identifier, normalize_resource_entries
 except ImportError:  # Direct script/test import.
     from json_codec import JsonCodecError, JsonDocument, clone_ast, dumps, parse_json
+    from resource_paths import lowercase_resource_identifier, normalize_resource_entries
 
 
 PACK_FORMAT = 15
@@ -46,7 +48,7 @@ MIN_PACK_FORMAT = [15, 0]
 MAX_PACK_FORMAT = [88, 0]
 SUPPORTED_PACK_FORMATS = {"min_inclusive": 15, "max_inclusive": 88}
 DEFAULT_PACK_DESCRIPTION = "Halo Pack Editor export"
-SCHEMA_VERSION = "1.0.10"
+SCHEMA_VERSION = "1.1.0"
 PBR_SUFFIXES = ("_n", "_s", "_e")
 IDENTIFIER_RE = re.compile(r"^[a-z0-9_.-]+:[a-z0-9_./-]+$")
 NAMESPACE_RE = re.compile(r"^[a-z0-9_.-]+$")
@@ -949,7 +951,7 @@ def _safe_texture_filename(filename: str) -> str:
         name += ".png"
     if not re.fullmatch(r"[A-Za-z0-9_.-]+\.png", name, re.IGNORECASE):
         raise PackIOError(f"Invalid PNG filename: {filename!r}")
-    return name
+    return name.lower()
 
 
 def _source_texture_variants(source_path: str | None, filename: str, base_stem: str) -> dict[str, tuple[bytes, str]]:
@@ -1134,6 +1136,7 @@ def _export_entries(project: PackProject | Any) -> dict[str, bytes]:
         output_paths[output_path] = definition
 
     used_paths = set(entries)
+    definition_records: list[tuple[str, Any]] = []
     for definition in definitions:
         data = _definition_ast(definition)
         try:
@@ -1149,6 +1152,14 @@ def _export_entries(project: PackProject | Any) -> dict[str, bytes]:
             )
         entries[output_path] = dumps(data, newline=True).encode("utf-8")
         used_paths.add(output_path)
+        definition_records.append((output_path, data))
+
+    # Repair legacy projects which retained upper-case source filenames.  The
+    # cloned definition ASTs and copied export entries are migrated together;
+    # the in-memory editing project is intentionally left untouched.
+    normalize_resource_entries(entries, (data for _path, data in definition_records))
+    for output_path, data in definition_records:
+        entries[output_path] = dumps(data, newline=True).encode("utf-8")
 
     # Metadata is editable but unknown keys in it are retained through the AST.
     metadata = getattr(project, "pack_mcmeta", None)

@@ -1,4 +1,4 @@
-"""Halo 1.0.10 JSON and resource-pack I/O.
+"""Halo 1.1.0 JSON and resource-pack I/O.
 
 This module deliberately uses only the Python standard library.  Parsing is
 permissive at the model boundary: malformed/unknown primitive kinds are kept
@@ -25,6 +25,9 @@ from .models import (
     HaloDefinition,
     HaloGroup,
     LayerAnimation,
+    MeshAlphaMask,
+    MeshMaterial,
+    MeshPrimitive,
     PackProject,
     Positioning,
     RawPrimitive,
@@ -206,6 +209,47 @@ def _parse_primitive(value: Mapping[str, Any], path: str = "primitive") -> Any:
             inner_texture=str(inner) if inner is not None else None,
             size=as_vec2(raw.get("size"), (0.35, 0.08)),
             segments=_int(raw.get("segments", 32), 32),
+            raw=raw,
+            uid=_stable_uid(f"primitive:{path}"),
+        )
+    if primitive_type == "mesh":
+        preserve_proportions = raw.get("preserve_proportions", False)
+        preserve_proportions = preserve_proportions if isinstance(preserve_proportions, bool) else False
+        size = as_vec3(raw.get("size"), (1.0, 1.0, 1.0)) if "size" in raw else (
+            None if preserve_proportions else (1.0, 1.0, 1.0)
+        )
+        material_raw = raw.get("material")
+        material_raw = clone_json(dict(material_raw)) if isinstance(material_raw, Mapping) else {}
+        mask = None
+        effects = material_raw.get("effects", [])
+        if isinstance(effects, list):
+            effect = next((value for value in effects
+                           if isinstance(value, Mapping) and str(value.get("type", "")) == "alpha_mask"), None)
+            if effect is not None:
+                uv_offset = effect.get("uv_offset") if isinstance(effect.get("uv_offset"), Mapping) else {}
+                def mask_terms(axis: str) -> list[AnimationTerm]:
+                    values = uv_offset.get(axis, []) if isinstance(uv_offset, Mapping) else []
+                    return [AnimationTerm.from_json(value) for value in values if isinstance(value, Mapping)] \
+                        if isinstance(values, list) else []
+                mask = MeshAlphaMask(
+                    texture=str(effect.get("texture", "")),
+                    mode=str(effect.get("mode", "linear")).lower(),
+                    threshold=_number(effect.get("threshold", 0.5), 0.5),
+                    offset_u=mask_terms("u"),
+                    offset_v=mask_terms("v"),
+                    raw=clone_json(dict(effect)),
+                )
+        return MeshPrimitive(
+            model=str(raw.get("model", "")),
+            texture=str(raw.get("texture", "")),
+            size=size,
+            preserve_proportions=preserve_proportions,
+            scale=_number(raw.get("scale", 1.0), 1.0),
+            material=MeshMaterial(
+                double_sided=bool(material_raw.get("double_sided", True)),
+                alpha_mask=mask,
+                raw=material_raw,
+            ),
             raw=raw,
             uid=_stable_uid(f"primitive:{path}"),
         )

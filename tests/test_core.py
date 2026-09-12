@@ -13,6 +13,7 @@ from halo_pack_editor.core import (
     BillboardPrimitive,
     HaloGroup,
     LayerAnimation,
+    MeshPrimitive,
     SchemaVersion,
     TransitionConfig,
     TransitionProperty,
@@ -22,6 +23,7 @@ from halo_pack_editor.core import (
     definition_to_dict,
     effective_group_state,
     evaluate_definition_tree,
+    has_integral_texture_scale,
     load_pack,
     mc_to_blender,
     mc_to_blender_matrix,
@@ -107,6 +109,83 @@ class CoreModelTests(unittest.TestCase):
         end = evaluate_definition_transition(definition, "serina", 0.5, startup=False)
         self.assertEqual(start.scale, (1.0, 1.0, 1.0))
         self.assertEqual(end.scale, (0.0, 0.0, 0.0))
+
+    def test_mesh_primitive_and_alpha_mask_round_trip(self):
+        source = {
+            "version": "1.1.0",
+            "id": "halo:mesh_mask_demo",
+            "layers": [{"id": "mesh", "primitive": {
+                "type": "mesh",
+                "model": "halo:models/halo/mesh_demo.obj",
+                "texture": "halo:textures/halo/mesh_demo.png",
+                "size": [0.9, 0.14, 0.9],
+                "material": {"double_sided": False, "effects": [{
+                    "type": "alpha_mask",
+                    "texture": "halo:textures/halo/mask.png",
+                    "mode": "step",
+                    "threshold": 0.35,
+                    "uv_offset": {
+                        "u": [{"function": "linear", "speed": 0.125}],
+                        "v": [{"function": "sin", "A": 0.05, "omega": 1}],
+                    },
+                    "future_effect": "keep",
+                }]},
+                "future_mesh": {"keep": True},
+            }}],
+        }
+        definition = parse_definition(source)
+        primitive = definition.groups[0].primitives[0]
+        self.assertIsInstance(primitive, MeshPrimitive)
+        self.assertEqual(primitive.size, (0.9, 0.14, 0.9))
+        self.assertFalse(primitive.material.double_sided)
+        self.assertEqual(primitive.material.alpha_mask.mode, "step")
+        self.assertAlmostEqual(primitive.material.alpha_mask.evaluate_offset(2.0)[0], 0.25)
+        output = definition_to_dict(definition)
+        mesh = output["layers"][0]["primitive"]
+        self.assertEqual(mesh["future_mesh"], {"keep": True})
+        self.assertEqual(mesh["material"]["effects"][0]["future_effect"], "keep")
+        self.assertTrue(validate_definition(definition).ok)
+
+    def test_mesh_preserve_proportions_round_trip_and_validation(self):
+        definition = parse_definition({
+            "version": "1.1.0",
+            "id": "halo:mesh_preserve",
+            "layers": [{"primitive": {
+                "type": "mesh",
+                "model": "halo:models/halo/example.obj",
+                "texture": "halo:textures/halo/example.png",
+                "preserve_proportions": True,
+                "scale": 0.4,
+            }}],
+        })
+        primitive = definition.groups[0].primitives[0]
+        self.assertIsNone(primitive.size)
+        self.assertTrue(primitive.preserve_proportions)
+        self.assertAlmostEqual(primitive.scale, 0.4)
+        output = definition_to_dict(definition)["layers"][0]["primitive"]
+        self.assertNotIn("size", output)
+        self.assertEqual(output["preserve_proportions"], True)
+        self.assertEqual(output["scale"], 0.4)
+        self.assertTrue(validate_definition(definition).ok)
+
+        missing_size = parse_definition({
+            "id": "halo:mesh_missing_size",
+            "layers": [{"primitive": {
+                "type": "mesh",
+                "model": "halo:models/halo/example.obj",
+                "texture": "halo:textures/halo/example.png",
+            }}],
+        })
+        self.assertTrue(any(issue.code == "mesh_size_required"
+                            for issue in validate_definition(missing_size).errors))
+
+    def test_mesh_mask_dimensions_require_uniform_integer_scale(self):
+        self.assertTrue(has_integral_texture_scale(32, 16, 16, 8))
+        self.assertTrue(has_integral_texture_scale(32, 16, 32, 16))
+        self.assertTrue(has_integral_texture_scale(32, 16, 96, 48))
+        self.assertFalse(has_integral_texture_scale(32, 16, 64, 16))
+        self.assertFalse(has_integral_texture_scale(32, 16, 48, 24))
+        self.assertFalse(has_integral_texture_scale(0, 16, 32, 16))
 
     def test_coordinate_change_and_transform_conjugation(self):
         self.assertEqual(mc_to_blender((1, 2, 3)), (1, -3, 2))

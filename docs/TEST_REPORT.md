@@ -1,9 +1,23 @@
-# Halo Pack Editor 0.3.7 测试报告
+# Halo Pack Editor 0.4.0 测试报告
 
-测试日期：2026-09-09
+测试日期：2026-09-12
 宿主：Blender 5.2.0 LTS（`fbe6228777e7`）  
-交付包：`dist/halo_pack_editor-0.3.7.zip`
-SHA-256：`29A9D96720AFED076E60E71A25ABB1720A0D2A89EAE26AC10FF5914B8EE8CB80`
+交付包：`dist/halo_pack_editor-0.4.0.zip`
+SHA-256：`4A37339793233105121C970F35290E0B55E8F9C199AEBC81295C2AAF24F4F083`
+
+## 0.4.0 Halo 2.0 原生 Mesh 专项验收
+
+- 跟进 Halo 2.0 的 Mesh 尺寸契约：面板可切换 `preserve_proportions` 并编辑统一 `scale`；开启时保留 OBJ 作者坐标与原点、允许 JSON 省略 `size`，关闭时继续逐轴拟合。主纹理/Alpha Mask 尺寸按宽高同一正整数倍判定，导入时即时报告、面板持续显示、场景验证列为警告。
+- 纯 Python 新增覆盖 32×16 对 16×8、32×16、96×48 的接受，以及 64×16、48×24 的拒绝；Blender 5.2 专项同时导入 `mesh_preserve_demo` 与 `mesh_mask_resolution_demo`，验证统一缩放包围盒、无 `size` JSON 往返、16/64 像素合法遮罩，以及 2×3 非法比例的中文调整提示。
+- 以 `F:\Halo` 当前 2.0.0 代码及自带 `mesh_demo`、`mesh_mask_demo`、`mesh_step_demo` 为契约，新增 schema 1.1.0 `MeshPrimitive`、OBJ 子集解析、三轴尺寸拟合、材质与 alpha_mask 类型模型；原始 AST 中未知 Mesh/效果字段继续保留。
+- 52 项纯 Python 测试通过。新增覆盖 Mesh/遮罩无损往返、保持比例 JSON 与验证、遮罩整数倍尺寸判定、UV 动画求值、OBJ 正负索引、UV V 翻转、平面凸四边形三角化、非法语句/缺 UV/非平面拒绝，以及外部 OBJ 同内容复用和异内容数字后缀。
+- Blender 5.2 后台专项导入五个真实定义、六个 Mesh 图元：每个模型取得 175 个渲染顶点、288 个三角形；逐轴拟合包围盒严格对应 Minecraft `size`，`mesh_preserve_demo` 严格对应原始 OBJ × `scale 0.4`，且开关切换实时重建；主纹理、单双面、linear/step 遮罩及合法整数倍分辨率节点均建立成功。
+- 时间轴从第 1 帧到第 21 帧验证 U 偏移 `0 → 0.125`。图形化操作器完成 U/V 项新增与编辑；外部 OBJ/遮罩 PNG 使用所属定义命名空间，并在导出 JSON 中保持。共享纹理的多个 Mesh 使用独立材质，避免逐图元 UV uniform 串扰。
+- 删除编辑缓存后从 `.blend` 来源快照恢复 OBJ、主纹理及遮罩材质，再导出 ZIP 成功；Halo 2.0 当前已编译 `HaloDefinitionDeserializer` 对五个导出定义交叉解析结果为 `JAVA_PARSER_OK 5`。
+- 全量构建通过：52 项纯 Python、Hina/Mesh 转子组/原生 OBJ/多来源、动画 Text、Serina、命名空间迁移、贴图裁剪、六种资源恢复、保存重开、EEVEE/Cycles 渲染、Extension 源码及 ZIP validate/build 均成功。生成并验证 `F:\HaloBlenderAddon\dist\halo_pack_editor-0.4.0.zip`。日志中的批量选择、过渡边界、无效 JSON Error 与 2×3 遮罩警告均为预期负向测试。Minecraft 客户端中的最终目视对照仍留给人工验收。
+- 最终 ZIP 在隔离配置 `F:\codex-cache\halo-blender-addon\isolated-0.4.0-final-20260912` 通过 `extension install-file` 安装，并以真实模块路径 `bl_ext.user_default.halo_pack_editor` 完成注册、新建项目、PNG 命名空间、定义文件名和 Serina 动画回归，未改动用户当前安装。
+
+## 0.3.7 历史验收
 
 ## 0.3.7 ID 资源归属、动画播放与定义文件名专项验收
 

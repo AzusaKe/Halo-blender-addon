@@ -2,6 +2,8 @@
 
 面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩展，可新建、导入、编辑、动画预览并导出 ZIP/文件夹资源包。界面使用简体中文，JSON 字段和 Minecraft 资源 ID 保留英文。
 
+0.4.0 对齐 Halo 2.0.0 / schema 1.1.0：可直接导入、导出、预览和编辑原生 OBJ `mesh` 图元。Mesh 面板包含 OBJ 重链接、三轴 `size` 或 `preserve_proportions + scale` 统一缩放、单双面材质，以及 `alpha_mask` 主/遮罩纹理、linear/step、阈值和 U/V 动画项的图形化编辑；OBJ 与遮罩也会进入 `.blend` 的来源资源快照。主纹理与遮罩尺寸不满足宽高同一整数倍时会即时提醒调整像素，但不会阻止继续编辑或导出。
+
 0.3.0 起可连续追加多个 ZIP/文件夹并合并编辑。项目面板分别列出资源包来源和光环定义；二者均可清除且不会修改磁盘源文件。每个导入来源先复制/解包到 Blender 用户数据目录中的独立编辑缓存，新建定义使用“本地编辑资源”缓存。重复 Definition ID 会把后来者自动改为 `_2`、`_3` 等，导出包含所有仍保留的来源资源和光环。单个光环还可设置仅作用于 Blender 的预览/渲染可见性，不写入 JSON。
 
 导出时默认声明 Minecraft Java 1.20～26.2 兼容：保留 `pack_format: 15`，并同时写入 `supported_formats: 15～88`、`min_format: [15,0]` 与 `max_format: [88,0]`。缺失描述自动补为 `Halo Pack Editor export`，已有描述与未知字段不会被覆盖。

@@ -28,6 +28,17 @@ class TextureImportTests(unittest.TestCase):
         self.assertEqual(len(list(self.pack.rglob("*.png"))), 1)
         self.assertEqual(Path(first[0]).name, "source.png")
 
+    def test_uppercase_source_and_requested_id_are_written_lowercase(self):
+        uppercase = self.root / "CH0069_Halo.PNG"
+        self.source.rename(uppercase)
+        self.source = uppercase
+        self.texture_id = "Demo:Textures/Halo/CH0069_Halo.PNG"
+        copied = self.copy()
+        self.assertEqual(
+            Path(copied[0]),
+            self.pack / "assets/demo/textures/halo/ch0069_halo.png",
+        )
+
     def test_conflicting_name_is_preserved_and_existing_suffix_reused(self):
         original = self.copy()[0]
         self.source.write_bytes(b"PNG-content-two")

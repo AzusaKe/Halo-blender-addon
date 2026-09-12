@@ -26,9 +26,10 @@ $dependencies = @(
     (First-Jar "$gradleModules\it.unimi.dsi\fastutil\8.5.12" 'fastutil-8.5.12.jar')
 )
 $mainClasses = Join-Path $HaloRepository 'build\classes\java\main'
-$compileClasspath = (@($mainClasses) + $dependencies) -join ';'
+$coreClasses = Join-Path $HaloRepository 'core\build\classes\java\main'
+$compileClasspath = (@($mainClasses, $coreClasses) + $dependencies) -join ';'
 javac --release 17 -encoding UTF-8 -cp $compileClasspath -d $Cache $source
 if ($LASTEXITCODE -ne 0) { throw 'Java parser check compilation failed' }
-$runtimeClasspath = (@($Cache, $mainClasses) + $dependencies) -join ';'
+$runtimeClasspath = (@($Cache, $mainClasses, $coreClasses) + $dependencies) -join ';'
 java -cp $runtimeClasspath JavaPackParseCheck $Pack
 if ($LASTEXITCODE -ne 0) { throw 'Java parser rejected exported pack' }

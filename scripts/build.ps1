@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $extensionRoot = Join-Path $projectRoot 'halo_pack_editor'
 $distRoot = Join-Path $projectRoot 'dist'
-$packagePath = Join-Path $distRoot 'halo_pack_editor-0.3.7.zip'
+$packagePath = Join-Path $distRoot 'halo_pack_editor-0.4.0.zip'
 
 if (-not (Test-Path -LiteralPath $BlenderExe)) {
     throw "Blender 5.2 executable not found: $BlenderExe"
@@ -42,6 +42,14 @@ if (Test-Path -LiteralPath $smokeTest) {
     & $BlenderExe --background --factory-startup --python-exit-code 1 --python $smokeTest -- $projectRoot
     if ($LASTEXITCODE -ne 0) { throw 'Blender background smoke test failed' }
 }
+
+$nativeMeshTest = Join-Path $PSScriptRoot 'blender_native_mesh_test.py'
+& $BlenderExe --background --factory-startup --python-exit-code 1 --python $nativeMeshTest -- $projectRoot 'F:\Halo'
+if ($LASTEXITCODE -ne 0) { throw 'Blender Halo 2.0 native Mesh test failed' }
+& (Join-Path $PSScriptRoot 'java_parser_check.ps1') `
+    -Pack 'F:\codex-cache\halo-blender-addon\tests\native-mesh-export.zip' `
+    -HaloRepository 'F:\Halo'
+if ($LASTEXITCODE -ne 0) { throw 'Halo 2.0 Java parser rejected native Mesh export' }
 
 $mergeTest = Join-Path $PSScriptRoot 'blender_merge_test.py'
 if (Test-Path -LiteralPath $mergeTest) {

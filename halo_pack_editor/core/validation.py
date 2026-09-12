@@ -18,6 +18,7 @@ from .models import (
     BillboardPrimitive,
     HaloDefinition,
     HaloGroup,
+    MeshPrimitive,
     PackProject,
     RawPrimitive,
     ResourceLocation,
@@ -215,6 +216,55 @@ def _validate_primitive(primitive: Any, report: ValidationReport, path: str) -> 
         _validate_size(primitive.size, report, f"{path}.size")
         if primitive.segments < 3:
             report.error("ring_segments", "ring segments must be at least 3", f"{path}.segments")
+    elif isinstance(primitive, MeshPrimitive):
+        _validate_texture(primitive.model, report, f"{path}.model")
+        if primitive.model and not primitive.model.endswith(".obj"):
+            report.error("mesh_model", "mesh model must reference an .obj resource", f"{path}.model")
+        _validate_texture(primitive.texture, report, f"{path}.texture")
+        authored_preserve = primitive.raw.get("preserve_proportions") if isinstance(primitive.raw, Mapping) else None
+        if isinstance(primitive.raw, Mapping) and "preserve_proportions" in primitive.raw and not isinstance(authored_preserve, bool):
+            report.error("mesh_preserve_proportions", "mesh preserve_proportions must be a boolean", f"{path}.preserve_proportions")
+        authored_scale = primitive.raw.get("scale") if isinstance(primitive.raw, Mapping) else None
+        if isinstance(primitive.raw, Mapping) and "scale" in primitive.raw:
+            if isinstance(authored_scale, bool) or not isinstance(authored_scale, (int, float)):
+                report.error("mesh_scale", "mesh scale must be a number", f"{path}.scale")
+            elif not isfinite(float(authored_scale)) or float(authored_scale) < 0:
+                report.error("mesh_scale", "mesh scale must be finite and nonnegative", f"{path}.scale")
+        if not isfinite(float(primitive.scale)) or primitive.scale < 0:
+            report.error("mesh_scale", "mesh scale must be finite and nonnegative", f"{path}.scale")
+        authored_size = primitive.raw.get("size") if isinstance(primitive.raw, Mapping) else None
+        if authored_size is None and not primitive.preserve_proportions:
+            report.error("mesh_size_required", "mesh size is required unless preserve_proportions is true", f"{path}.size")
+        elif authored_size is not None and (not isinstance(authored_size, (list, tuple)) or len(authored_size) != 3):
+            report.error("mesh_size_components", "mesh size must contain exactly 3 components", f"{path}.size")
+        if primitive.size is not None:
+            _validate_mesh_size(primitive.size, report, f"{path}.size")
+        authored_material = primitive.raw.get("material") if isinstance(primitive.raw, Mapping) else None
+        if authored_material is not None and not isinstance(authored_material, Mapping):
+            report.error("mesh_material", "mesh material must be an object", f"{path}.material")
+        effects = authored_material.get("effects") if isinstance(authored_material, Mapping) else None
+        if effects is not None and not isinstance(effects, list):
+            report.error("mesh_effects", "mesh material effects must be an array", f"{path}.material.effects")
+        elif isinstance(effects, list):
+            if len(effects) > 1:
+                report.error("mesh_effect_count", "mesh material supports at most one alpha_mask effect", f"{path}.material.effects")
+            for index, effect in enumerate(effects):
+                if not isinstance(effect, Mapping) or str(effect.get("type", "")) != "alpha_mask":
+                    report.error("mesh_effect_type", "mesh material only supports alpha_mask", f"{path}.material.effects[{index}]")
+        mask = primitive.material.alpha_mask
+        if mask is not None:
+            _validate_texture(mask.texture, report, f"{path}.material.effects[0].texture")
+            if mask.mode not in {"linear", "step"}:
+                report.error("mesh_mask_mode", "alpha_mask mode must be linear or step", f"{path}.material.effects[0].mode")
+            if not isfinite(mask.threshold) or not 0.0 <= mask.threshold <= 1.0:
+                report.error("mesh_mask_threshold", "alpha_mask threshold must be within [0,1]", f"{path}.material.effects[0].threshold")
+            for axis, terms in (("u", mask.offset_u), ("v", mask.offset_v)):
+                for index, term in enumerate(terms):
+                    term_path = f"{path}.material.effects[0].uv_offset.{axis}[{index}]"
+                    if term.function.lower() not in KNOWN_FUNCTIONS:
+                        report.error("animation_function", f"unknown animation function {term.function!r}", term_path)
+                    for field in ("A", "omega", "phi", "start", "speed"):
+                        _finite(report, getattr(term, field), f"{term_path}.{field}")
     elif isinstance(primitive, RawPrimitive):
         report.warning("unknown_primitive", f"primitive type {primitive.type!r} is not interpreted and will be retained", path)
     else:
@@ -330,6 +380,17 @@ def _validate_size(size: Iterable[float], report: ValidationReport, path: str) -
             report.error("size_positive", "size values must be greater than zero", f"{path}[{i}]")
 
 
+def _validate_mesh_size(size: Iterable[float], report: ValidationReport, path: str) -> None:
+    values = list(size)
+    if len(values) != 3:
+        report.error("size_components", "mesh size must contain exactly three values", path)
+        return
+    for i, value in enumerate(values):
+        _finite(report, value, f"{path}[{i}]")
+        if value < 0:
+            report.error("size_nonnegative", "mesh size values must be nonnegative", f"{path}[{i}]")
+
+
 def _validate_texture(texture: str, report: ValidationReport, path: str) -> None:
     if not isinstance(texture, str) or not texture:
         report.error("missing_texture", "primitive texture is required", path)
@@ -343,6 +404,21 @@ def _validate_texture(texture: str, report: ValidationReport, path: str) -> None
         report.error("unsafe_texture_path", "texture path contains an empty or parent component", path)
 
 
+def has_integral_texture_scale(first_width: int, first_height: int, second_width: int, second_height: int) -> bool:
+    """Match HaloCore's alpha-mask resolution compatibility rule exactly."""
+
+    dimensions = (first_width, first_height, second_width, second_height)
+    if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in dimensions):
+        return False
+
+    def is_integer_enlargement(wide_w: int, wide_h: int, small_w: int, small_h: int) -> bool:
+        return wide_w % small_w == 0 and wide_h % small_h == 0 \
+            and wide_w // small_w == wide_h // small_h
+
+    return is_integer_enlargement(first_width, first_height, second_width, second_height) \
+        or is_integer_enlargement(second_width, second_height, first_width, first_height)
+
+
 def _finite(report: ValidationReport, value: Any, path: str) -> None:
     try:
         if not isfinite(float(value)):
@@ -353,5 +429,5 @@ def _finite(report: ValidationReport, value: Any, path: str) -> None:
 
 __all__ = [
     "ValidationIssue", "ValidationReport", "validate_definition", "validate_pack", "assert_valid",
+    "has_integral_texture_scale",
 ]
-

@@ -250,6 +250,12 @@ class PackIOTests(unittest.TestCase):
             self.assertEqual(second.identifier, "demo:textures/halo/halo_1.png")
             self.assertIn("assets/demo/textures/halo/halo_1_n.png", loaded.files)
 
+            uppercase = png_dir / "CH0069_Halo.PNG"
+            uppercase.write_bytes(b"UPPER")
+            normalized = import_external_png(loaded, uppercase, namespace="demo")
+            self.assertEqual(normalized.identifier, "demo:textures/halo/ch0069_halo.png")
+            self.assertIn("assets/demo/textures/halo/ch0069_halo.png", loaded.files)
+
     def test_safe_extract_zip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             archive_data = io.BytesIO()

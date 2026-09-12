@@ -13,7 +13,7 @@ except ImportError:  # pragma: no cover - Blender-only module
     bpy = None
 
 from .geometry import mc_rotation_quaternion, mc_to_blender
-from .materials import set_material_visual
+from .materials import set_material_visual, set_mesh_mask_offset
 
 _VIEW_DRAW_HANDLE = None
 _SCENE_VIEW_QUATERNIONS: dict[int, tuple[float, float, float, float]] = {}
@@ -59,6 +59,24 @@ def evaluate_term(term: Mapping[str, Any], time_seconds: float) -> float:
 
 def evaluate_terms(terms: Sequence[Mapping[str, Any]] | None, time_seconds: float, default: float = 0.0) -> float:
     return sum(evaluate_term(term, time_seconds) for term in (terms or ())) if terms else float(default)
+
+
+def _apply_mesh_mask_animation(obj, time_seconds: float) -> None:
+    node = getattr(obj, "halo_node", None)
+    if node is None or getattr(node, "primitive_type", "") != "mesh":
+        return
+    raw = _load_json(obj.get("halo_primitive_raw_json", obj.get("halo_raw_json", "{}")))
+    material = raw.get("material") if isinstance(raw, Mapping) else None
+    effects = material.get("effects") if isinstance(material, Mapping) else None
+    mask = next((value for value in effects or () if isinstance(value, Mapping)
+                 and str(value.get("type", "")) == "alpha_mask"), None)
+    uv = mask.get("uv_offset") if isinstance(mask, Mapping) else None
+    u_terms = uv.get("u") if isinstance(uv, Mapping) and isinstance(uv.get("u"), list) else ()
+    v_terms = uv.get("v") if isinstance(uv, Mapping) and isinstance(uv.get("v"), list) else ()
+    u = evaluate_terms(u_terms, time_seconds, 0.0) % 1.0
+    v = evaluate_terms(v_terms, time_seconds, 0.0) % 1.0
+    for blender_material in getattr(obj.data, "materials", ()):
+        set_mesh_mask_offset(blender_material, u, v)
 
 
 def _channel(animation: Mapping[str, Any], group: str, axis: str, time_seconds: float, default=0.0) -> float:
@@ -455,6 +473,7 @@ def _core_scene_animation(scene, root, raw: Mapping[str, Any], time_seconds: flo
                     child["halo_preview_glow"] = visible_glow
                     for material in getattr(child.data, "materials", ()):
                         set_material_visual(material, effective_alpha, visible_glow)
+                    _apply_mesh_mask_animation(child, idle_time)
             next_alpha = effective_alpha if bool(getattr(typed_group, "inherit_alpha", True)) else 1.0
             next_glow = effective_glow if bool(getattr(typed_group, "inherit_glow", True)) else 1.0
             child_objects = [child for child in obj.children if child.get("halo_role") == "group"]
@@ -564,6 +583,10 @@ def update_animation(scene):
                     child["halo_preview_glow"] = effective_glow
                     for material in getattr(child.data, "materials", ()):
                         set_material_visual(material, effective_alpha, effective_glow)
+                    _apply_mesh_mask_animation(
+                        child,
+                        project.preview_phase if mode != "IDLE" else time_seconds,
+                    )
                 elif child.get("halo_role") == "group":
                     stack.append((child, effective_alpha, effective_glow))
     update_face_camera(scene)

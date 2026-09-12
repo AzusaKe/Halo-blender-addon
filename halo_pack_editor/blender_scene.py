@@ -37,7 +37,9 @@ from .geometry import (
     ring_mesh,
     uniform_scale,
 )
-from .materials import assign_primitive_materials
+from .materials import assign_mesh_material, assign_primitive_materials
+from .obj_mesh import build_blender_mesh, load_obj_resource
+from .core.resource_paths import normalize_staged_resources
 
 
 COLLECTION_NAME = "Halo Pack Editor"
@@ -346,6 +348,10 @@ def read_pack(path: str | os.PathLike[str]) -> dict[str, Any]:
                 definitions.append({"id": definition_id, "raw": raw, "source_path": relative, "error": ""})
             except Exception as exc:
                 definitions.append({"id": fallback, "raw": normalise_definition({"id": fallback}, fallback), "source_path": relative, "error": str(exc)})
+    # Work only on the editable cache, never the user's source pack.  This
+    # makes legacy upper-case assets immediately previewable and editable on
+    # case-sensitive hosts as well as guaranteeing valid IDs on export.
+    normalize_staged_resources(root_path, (item["raw"] for item in definitions))
     return {
         "source_path": source,
         "root": root,
@@ -468,6 +474,20 @@ def _store_node_props(obj, raw: Mapping[str, Any], definition_id: str, role: str
                 node.texture = str(primitive.get("texture", primitive.get("outer_texture", "")))
                 node.inner_texture = str(primitive.get("inner_texture", ""))
                 node.size = _vec(primitive.get("size"), 2, (1.0, 1.0))
+                node.mesh_model = str(primitive.get("model", ""))
+                node.mesh_size = _vec(primitive.get("size"), 3, (1.0, 1.0, 1.0))
+                node.mesh_preserve_proportions = bool(primitive.get("preserve_proportions", False))
+                node.mesh_scale = float(primitive.get("scale", 1.0))
+                obj["halo_mesh_size_present"] = "size" in primitive
+                material = primitive.get("material") if isinstance(primitive.get("material"), Mapping) else {}
+                node.mesh_double_sided = bool(material.get("double_sided", True))
+                effects = material.get("effects") if isinstance(material.get("effects"), list) else []
+                mask = next((effect for effect in effects if isinstance(effect, Mapping)
+                             and str(effect.get("type", "")) == "alpha_mask"), None)
+                node.mesh_mask_enabled = mask is not None
+                node.mesh_mask_texture = str(mask.get("texture", "")) if mask is not None else ""
+                node.mesh_mask_mode = str(mask.get("mode", "linear")) if mask is not None else "linear"
+                node.mesh_mask_threshold = float(mask.get("threshold", 0.5)) if mask is not None else 0.5
                 node.segments = int(primitive.get("segments", 32) or 32)
                 node.face_camera = bool(primitive.get("face_camera", False))
                 obj["halo_primitive_raw_json"] = json.dumps(dict(primitive), ensure_ascii=False, separators=(",", ":"))
@@ -547,6 +567,7 @@ def _make_primitive(collection, group_obj, primitive: Mapping[str, Any], definit
     primitive_type = str(primitive.get("type", "billboard")).lower()
     size = _vec(primitive.get("size"), 2, (1.0, 1.0))
     obj_name = f"{group_obj.name} · {primitive_type}"
+    model_error = ""
     if primitive_type == "ring":
         # Blender uses one double-sided surface for both variants.  When an
         # explicit inner texture exists, the material selects it on backfaces;
@@ -554,6 +575,23 @@ def _make_primitive(collection, group_obj, primitive: Mapping[str, Any], definit
         mesh = ring_mesh(obj_name, size, int(primitive.get("segments", 32) or 32), False)
         texture = str(primitive.get("outer_texture", primitive.get("texture", "")))
         inner_texture = str(primitive.get("inner_texture", ""))
+    elif primitive_type == "mesh":
+        texture = str(primitive.get("texture", ""))
+        inner_texture = ""
+        scene = getattr(bpy.context, "scene", None)
+        pack_root = definition_pack_root(scene, definition_id) if scene is not None else ""
+        try:
+            source = load_obj_resource(str(primitive.get("model", "")), pack_root)
+            mesh = build_blender_mesh(
+                obj_name,
+                source,
+                _vec(primitive.get("size"), 3, (1.0, 1.0, 1.0)) if "size" in primitive else None,
+                preserve_proportions=bool(primitive.get("preserve_proportions", False)),
+                scale=float(primitive.get("scale", 1.0)),
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            mesh = billboard_mesh(obj_name + " · missing OBJ", (0.25, 0.25))
+            model_error = str(exc)
     else:
         mesh = billboard_mesh(obj_name, size)
         texture = str(primitive.get("texture", ""))
@@ -564,10 +602,29 @@ def _make_primitive(collection, group_obj, primitive: Mapping[str, Any], definit
     reset_primitive_transform(obj)
     primitive_uuid = _deterministic_uuid(definition_id, path)
     _store_node_props(obj, primitive, definition_id, PRIMITIVE_ROLE, primitive_uuid, primitive)
+    if model_error:
+        obj["halo_missing_model"] = True
+        obj["halo_model_error"] = model_error
+    else:
+        obj.pop("halo_missing_model", None)
+        obj.pop("halo_model_error", None)
     obj["halo_primitive_index"] = int(path.rsplit("/", 1)[-1]) if path.rsplit("/", 1)[-1].isdigit() else 0
     scene = getattr(bpy.context, "scene", None)
     pack_root = definition_pack_root(scene, definition_id) if scene is not None else ""
-    assign_primitive_materials(obj, texture, inner_texture or None, pack_root, glowing=glowing)
+    if primitive_type == "mesh":
+        material = primitive.get("material") if isinstance(primitive.get("material"), Mapping) else {}
+        effects = material.get("effects") if isinstance(material.get("effects"), list) else []
+        mask = next((effect for effect in effects if isinstance(effect, Mapping)
+                     and str(effect.get("type", "")) == "alpha_mask"), None)
+        assign_mesh_material(
+            obj, texture, pack_root, glowing=glowing,
+            double_sided=bool(material.get("double_sided", True)),
+            mask_texture_id=str(mask.get("texture", "")) if mask is not None else "",
+            mask_mode=str(mask.get("mode", "linear")) if mask is not None else "linear",
+            mask_threshold=float(mask.get("threshold", 0.5)) if mask is not None else 0.5,
+        )
+    else:
+        assign_primitive_materials(obj, texture, inner_texture or None, pack_root, glowing=glowing)
     return obj
 
 
@@ -631,7 +688,7 @@ def _create_definition_pg(
     item.source_id = source_id
     item.visible = True
     item.raw_json = json.dumps(dict(raw), ensure_ascii=False, indent=2)
-    item.schema_version = str(raw.get("version", project.schema_version or "1.0.10"))
+    item.schema_version = str(raw.get("version", project.schema_version or "1.1.0"))
     item.orientation_mode = str(raw.get("orientation_mode", "locked")).lower()
     item.sync_offset = _vec(raw.get("sync_offset"), 3, (0, 0, 0))
     positioning = raw.get("positioning") if isinstance(raw.get("positioning"), Mapping) else {}
@@ -737,7 +794,7 @@ def import_project_to_scene(context, path: str | os.PathLike[str], replace: bool
     project.pack_root = data["root"]
     if replace or not had_existing_project:
         project.manifest_json = json.dumps(data["manifest"], ensure_ascii=False, indent=2)
-        project.schema_version = str(data["manifest"].get("halo_schema", "1.0.10")) if isinstance(data["manifest"], Mapping) else "1.0.10"
+        project.schema_version = str(data["manifest"].get("halo_schema", "1.1.0")) if isinstance(data["manifest"], Mapping) else "1.1.0"
     imported = 0
     renamed = []
     for definition in data["definitions"]:
@@ -863,6 +920,37 @@ def _sync_primitive(obj):
                 raw.pop("inner_texture", None)
             raw["size"] = list(node.size)
             raw["segments"] = int(node.segments)
+        elif node.primitive_type == "mesh":
+            raw["model"] = node.mesh_model
+            raw["texture"] = node.texture
+            raw["preserve_proportions"] = bool(node.mesh_preserve_proportions)
+            raw["scale"] = float(node.mesh_scale)
+            if not node.mesh_preserve_proportions or bool(obj.get("halo_mesh_size_present", "size" in raw)):
+                raw["size"] = list(node.mesh_size)
+                obj["halo_mesh_size_present"] = True
+            else:
+                raw.pop("size", None)
+            raw.pop("outer_texture", None)
+            raw.pop("inner_texture", None)
+            raw.pop("segments", None)
+            raw.pop("face_camera", None)
+            material = raw.get("material")
+            material = dict(material) if isinstance(material, Mapping) else {}
+            material["double_sided"] = bool(node.mesh_double_sided)
+            effects = [dict(effect) for effect in material.get("effects", []) if isinstance(effect, Mapping)]
+            old_mask = next((effect for effect in effects if str(effect.get("type", "")) == "alpha_mask"), None)
+            effects = [effect for effect in effects if str(effect.get("type", "")) != "alpha_mask"]
+            if node.mesh_mask_enabled:
+                mask = dict(old_mask) if old_mask is not None else {}
+                mask.update({
+                    "type": "alpha_mask",
+                    "texture": node.mesh_mask_texture,
+                    "mode": node.mesh_mask_mode,
+                    "threshold": float(node.mesh_mask_threshold),
+                })
+                effects.insert(0, mask)
+            material["effects"] = effects
+            raw["material"] = material
         else:
             raw["texture"] = node.texture
             raw["size"] = list(node.size)
@@ -870,6 +958,9 @@ def _sync_primitive(obj):
     obj["halo_primitive_raw_json"] = json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
     obj["halo_texture_id"] = str(raw.get("texture", raw.get("outer_texture", "")))
     obj["halo_inner_texture_id"] = str(raw.get("inner_texture", ""))
+    if node is not None and node.primitive_type == "mesh":
+        obj["halo_model_id"] = node.mesh_model
+        obj["halo_mesh_mask_texture_id"] = node.mesh_mask_texture if node.mesh_mask_enabled else ""
     return raw
 
 
@@ -952,7 +1043,7 @@ def sync_definition_from_scene(scene, definition_id: str) -> dict[str, Any] | No
             if scene.halo_project.active_definition == old_definition_id:
                 scene.halo_project.active_definition = new_definition_id
         raw["id"] = item.definition_id
-        raw["version"] = item.schema_version or "1.0.10"
+        raw["version"] = item.schema_version or "1.1.0"
         raw["orientation_mode"] = item.orientation_mode
         if item.orientation_mode == "sync" or "sync_offset" in raw:
             raw["sync_offset"] = list(item.sync_offset)
@@ -1341,7 +1432,7 @@ def export_pack_from_scene(scene, target_path: str | os.PathLike[str], zip_outpu
             pass
         manifest = _complete_manifest(manifest)
         (temporary / "pack.mcmeta").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        exported_documents = []
+        export_records = []
         for item in scene.halo_project.definitions:
             raw = raw_definitions.get(item.definition_id)
             if raw is None:
@@ -1349,12 +1440,19 @@ def export_pack_from_scene(scene, target_path: str | os.PathLike[str], zip_outpu
                     raw = json.loads(item.raw_json)
                 except (TypeError, ValueError):
                     continue
+            export_records.append((item, raw))
+        exported_documents = [raw for _item, raw in export_records]
+        # Generated images still carry the editing project's original ID.  Put
+        # them into staging first, then lower-case/migrate both files and JSON
+        # references together.  Existing .blend files therefore repair
+        # themselves on their next export without mutating the editing cache.
+        _write_generated_textures(temporary, exported_documents)
+        normalize_staged_resources(temporary, exported_documents)
+        for item, raw in export_records:
             path = _definition_output_path(temporary, item, item.definition_id)
             path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            exported_documents.append(raw)
         # The JSON actually written above is authoritative, not stale Images,
         # cached source definitions, visible-object selection or namespaces.
-        _write_generated_textures(temporary, exported_documents)
         _prune_unused_staged_textures(temporary, exported_documents)
         if zip_output:
             target.parent.mkdir(parents=True, exist_ok=True)

@@ -42,7 +42,7 @@ TRANSFORM_PRECISION_ITEMS = (
 )
 NODE_ROLE_ITEMS = (
     ("group", "部件组", "可拥有子组和图元的层级节点"),
-    ("primitive", "图元", "Billboard 或 Ring 几何图元"),
+    ("primitive", "图元", "Billboard、Ring 或 Mesh 几何图元"),
 )
 FUNCTION_ITEMS = (
     ("sin", "sin", "正弦项"),
@@ -501,7 +501,11 @@ if bpy is not None:
         node_id: StringProperty(name="部件 ID", default="", update=_node_group_update)
         primitive_type: EnumProperty(
             name="图元类型",
-            items=(("billboard", "Billboard", "水平四边形"), ("ring", "Ring", "圆环/圆柱")),
+            items=(
+                ("billboard", "Billboard", "水平四边形"),
+                ("ring", "Ring", "圆环/圆柱"),
+                ("mesh", "Mesh", "Halo 2.0 OBJ 网格"),
+            ),
             default="billboard",
             update=_primitive_geometry_update,
         )
@@ -514,6 +518,39 @@ if bpy is not None:
         texture: StringProperty(name="纹理", default="", update=_primitive_geometry_update)
         inner_texture: StringProperty(name="内侧纹理", default="", update=_primitive_geometry_update)
         size: FloatVectorProperty(name="尺寸", size=2, default=(1.0, 1.0), min=0.0, precision=5, update=_primitive_geometry_update)
+        mesh_model: StringProperty(name="OBJ 模型", default="", update=_primitive_geometry_update)
+        mesh_size: FloatVectorProperty(
+            name="Mesh 尺寸", size=3, default=(1.0, 1.0, 1.0), min=0.0, precision=5,
+            description="按 OBJ 已引用顶点的包围盒逐轴缩放；保持 OBJ 原点不变",
+            update=_primitive_geometry_update,
+        )
+        mesh_preserve_proportions: BoolProperty(
+            name="保持原始比例",
+            description="保留 OBJ 原始坐标比例并忽略目标包围盒尺寸；1 OBJ 单位对应 1 格",
+            default=False,
+            update=_primitive_geometry_update,
+        )
+        mesh_scale: FloatProperty(
+            name="统一缩放",
+            description="保持原始比例时，围绕 OBJ 原点统一缩放 XYZ；仅在开关开启时生效",
+            default=1.0,
+            min=0.0,
+            precision=5,
+            update=_primitive_geometry_update,
+        )
+        mesh_double_sided: BoolProperty(name="双面", default=True, update=_primitive_geometry_update)
+        mesh_mask_enabled: BoolProperty(name="启用 Alpha Mask", default=False, update=_primitive_geometry_update)
+        mesh_mask_texture: StringProperty(name="遮罩纹理", default="", update=_primitive_geometry_update)
+        mesh_mask_mode: EnumProperty(
+            name="遮罩模式",
+            items=(("linear", "Linear", "遮罩红色通道直接乘 Alpha"), ("step", "Step", "红色通道达到阈值时显示")),
+            default="linear",
+            update=_primitive_geometry_update,
+        )
+        mesh_mask_threshold: FloatProperty(
+            name="Step 阈值", default=0.5, min=0.0, max=1.0, precision=4,
+            update=_primitive_geometry_update,
+        )
         segments: IntProperty(name="分段数", default=32, min=3, max=4096, update=_primitive_geometry_update)
         face_camera: BoolProperty(name="面向相机", default=False, update=_primitive_face_camera_update)
         animation_json: StringProperty(name="常驻动画 JSON", default="")
@@ -530,7 +567,7 @@ if bpy is not None:
         source_id: StringProperty(name="资源包来源", default="", options={"HIDDEN"})
         visible: BoolProperty(name="在预览中显示", default=True, update=_definition_visibility_update)
         raw_json: StringProperty(name="完整 JSON", default="", options={"HIDDEN"})
-        schema_version: StringProperty(name="Schema", default="1.0.10")
+        schema_version: StringProperty(name="Schema", default="1.1.0")
         orientation_mode: EnumProperty(
             name="朝向模式",
             items=(
@@ -581,7 +618,7 @@ if bpy is not None:
         pack_root: StringProperty(name="资源包目录", default="", subtype="DIR_PATH")
         source_path: StringProperty(name="导入源", default="", subtype="FILE_PATH")
         manifest_json: StringProperty(name="pack.mcmeta", default="")
-        schema_version: StringProperty(name="默认 Schema", default="1.0.10")
+        schema_version: StringProperty(name="默认 Schema", default="1.1.0")
         output_path: StringProperty(name="导出路径", default="", subtype="FILE_PATH")
         active_definition: StringProperty(name="当前光环", default="")
         active_definition_index: IntProperty(name="当前光环索引", default=0, min=0, options={"HIDDEN"}, update=_active_definition_index_update)
@@ -594,6 +631,12 @@ if bpy is not None:
         transition_duration: FloatProperty(name="过渡时长", default=1.0, min=0.0)
         animation_channel: EnumProperty(name="动画通道", items=ANIMATION_CHANNEL_ITEMS, default="offset.x")
         animation_term_index: IntProperty(name="动画项索引", default=0, min=0)
+        mesh_mask_axis: EnumProperty(
+            name="遮罩 UV 轴",
+            items=(("u", "U", "编辑 U 方向循环偏移"), ("v", "V", "编辑 V 方向循环偏移")),
+            default="u",
+        )
+        mesh_mask_term_index: IntProperty(name="遮罩动画项索引", default=0, min=0)
         transition_target: EnumProperty(
             name="过渡目标",
             items=(("startup", "启动", ""), ("shutdown", "关闭", "")),

@@ -14,6 +14,9 @@ import shutil
 from pathlib import Path
 from typing import Iterable
 
+from .core.resource_paths import lowercase_resource_identifier
+from .core.validation import has_integral_texture_scale
+
 
 def split_resource_id(resource_id: str, default_namespace: str = "minecraft") -> tuple[str, str]:
     """Return ``(namespace, path)`` for a Minecraft resource identifier."""
@@ -327,7 +330,8 @@ def load_texture_image(texture_id: str, pack_root: str | os.PathLike[str] | None
     path = resolve_texture_path(texture_id, pack_root)
     if path:
         for image in bpy.data.images:
-            if os.path.normcase(os.path.abspath(bpy.path.abspath(getattr(image, "filepath", "")))) == os.path.normcase(path):
+            if (not image.get("halo_mask_image")
+                    and os.path.normcase(os.path.abspath(bpy.path.abspath(getattr(image, "filepath", "")))) == os.path.normcase(path)):
                 image["halo_texture_id"] = texture_id
                 image["halo_source_path"] = path
                 return pack_halo_image(image)
@@ -357,6 +361,33 @@ def load_texture_image(texture_id: str, pack_root: str | os.PathLike[str] | None
     name = "Missing Halo Texture - " + (texture_id or "unknown")
     existing = bpy.data.images.get(name)
     return existing or _new_placeholder_image(texture_id)
+
+
+def load_mask_image(texture_id: str, pack_root: str | os.PathLike[str] | None = None):
+    """Load a separate non-color image datablock for a mesh alpha mask."""
+
+    import bpy
+
+    path = resolve_texture_path(texture_id, pack_root)
+    for image in bpy.data.images:
+        if not image.get("halo_mask_image") or image.get("halo_texture_id") != texture_id:
+            continue
+        source = image.get("halo_source_path") or image.filepath
+        if path is None or (source and os.path.normcase(os.path.abspath(bpy.path.abspath(source))) == os.path.normcase(path)):
+            return pack_halo_image(image)
+    base = load_texture_image(texture_id, pack_root)
+    image = base.copy()
+    image.name = "Halo Mask - " + (Path(path).name if path else texture_id)
+    image["halo_texture_id"] = texture_id
+    image["halo_mask_image"] = True
+    if path:
+        image["halo_source_path"] = path
+        image.filepath = path
+    try:
+        image.colorspace_settings.name = "Non-Color"
+    except TypeError:
+        pass
+    return pack_halo_image(image)
 
 
 def create_halo_material(
@@ -459,6 +490,122 @@ def assign_primitive_materials(
     return outer
 
 
+def assign_mesh_material(
+    obj,
+    texture_id: str,
+    pack_root: str | os.PathLike[str] | None = None,
+    *,
+    glowing: bool = True,
+    double_sided: bool = True,
+    mask_texture_id: str = "",
+    mask_mode: str = "linear",
+    mask_threshold: float = 0.5,
+):
+    """Build Halo 2.0's base texture plus optional animated alpha-mask graph."""
+
+    material = create_halo_material(
+        texture_id,
+        pack_root,
+        glowing=glowing,
+        backface_culling=not double_sided,
+        # Mask UV offsets are animated per primitive.  A dedicated material
+        # datablock prevents two meshes that share PNGs from overwriting each
+        # other's shader uniforms on the same frame.
+        name=f"Halo Mesh {texture_id or 'Texture'} [{obj.get('halo_uuid', obj.name)}]",
+    )
+    material["halo_mesh_material"] = True
+    material["halo_mesh_double_sided"] = bool(double_sided)
+    material["halo_mesh_mask_texture_id"] = str(mask_texture_id or "")
+    material["halo_mesh_mask_mode"] = str(mask_mode or "linear")
+    material["halo_mesh_mask_threshold"] = float(mask_threshold)
+    if mask_texture_id and material.use_nodes:
+        nodes = material.node_tree.nodes
+        links = material.node_tree.links
+        preview_alpha = nodes.get("Halo Preview Alpha")
+        base_texture = next((node for node in nodes if node.bl_idname == "ShaderNodeTexImage" and node.name != "Halo Backface Texture"), None)
+        if preview_alpha is not None and base_texture is not None:
+            for link in list(preview_alpha.inputs[0].links):
+                links.remove(link)
+            coordinates = nodes.new("ShaderNodeTexCoord")
+            coordinates.name = "Halo Mask Coordinates"
+            coordinates.location = (-680, -350)
+            offset = nodes.new("ShaderNodeVectorMath")
+            offset.name = "Halo Mask UV Offset"
+            offset.operation = "ADD"
+            offset.location = (-500, -350)
+            offset.inputs[1].default_value = (0.0, 0.0, 0.0)
+            mask_texture = nodes.new("ShaderNodeTexImage")
+            mask_texture.name = "Halo Mask Texture"
+            mask_texture.location = (-300, -360)
+            mask_texture.image = load_mask_image(mask_texture_id, pack_root)
+            mask_texture.interpolation = "Closest"
+            mask_texture.extension = "REPEAT"
+            separate = nodes.new("ShaderNodeSeparateColor")
+            separate.name = "Halo Mask Red"
+            separate.mode = "RGB"
+            separate.location = (-90, -380)
+            mask_factor = separate.outputs.get("Red")
+            if str(mask_mode).lower() == "step":
+                below = nodes.new("ShaderNodeMath")
+                below.name = "Halo Mask Below Threshold"
+                below.operation = "LESS_THAN"
+                below.location = (20, -410)
+                below.inputs[1].default_value = float(mask_threshold)
+                links.new(separate.outputs["Red"], below.inputs[0])
+                step = nodes.new("ShaderNodeMath")
+                step.name = "Halo Mask Step"
+                step.operation = "SUBTRACT"
+                step.location = (110, -350)
+                step.inputs[0].default_value = 1.0
+                links.new(below.outputs[0], step.inputs[1])
+                mask_factor = step.outputs[0]
+            combine = nodes.new("ShaderNodeMath")
+            combine.name = "Halo Mesh Base × Mask Alpha"
+            combine.operation = "MULTIPLY"
+            combine.location = (80, -220)
+            links.new(coordinates.outputs["UV"], offset.inputs[0])
+            links.new(offset.outputs["Vector"], mask_texture.inputs["Vector"])
+            links.new(mask_texture.outputs["Color"], separate.inputs["Color"])
+            links.new(base_texture.outputs["Alpha"], combine.inputs[0])
+            links.new(mask_factor, combine.inputs[1])
+            links.new(combine.outputs[0], preview_alpha.inputs[0])
+            if mask_texture.image and mask_texture.image.get("halo_missing_texture"):
+                material["halo_missing_texture"] = True
+    assign_material(obj, material, 0)
+    return material
+
+
+def mesh_mask_resolution_warning(material) -> str | None:
+    """Describe an incompatible loaded base/mask PNG pair, if present."""
+
+    if material is None or not getattr(material, "use_nodes", False):
+        return None
+    nodes = material.node_tree.nodes
+    mask_node = nodes.get("Halo Mask Texture")
+    base_node = next((node for node in nodes if node.bl_idname == "ShaderNodeTexImage"
+                      and node.name not in {"Halo Mask Texture", "Halo Backface Texture"}), None)
+    if mask_node is None or mask_node.image is None or base_node is None or base_node.image is None:
+        return None
+    if mask_node.image.get("halo_missing_texture") or base_node.image.get("halo_missing_texture"):
+        return None
+    base_width, base_height = (int(value) for value in base_node.image.size[:2])
+    mask_width, mask_height = (int(value) for value in mask_node.image.size[:2])
+    if has_integral_texture_scale(base_width, base_height, mask_width, mask_height):
+        return None
+    return (
+        f"Alpha Mask 为 {mask_width}×{mask_height}，主纹理为 {base_width}×{base_height}；"
+        f"请调整 PNG 像素尺寸，使宽高使用同一整数倍（例如 {base_width}×{base_height}）"
+    )
+
+
+def set_mesh_mask_offset(material, offset_u: float, offset_v: float):
+    if material is None or not material.use_nodes:
+        return
+    node = material.node_tree.nodes.get("Halo Mask UV Offset")
+    if node is not None:
+        node.inputs[1].default_value = (float(offset_u) % 1.0, float(offset_v) % 1.0, 0.0)
+
+
 def set_material_visual(material, alpha: float = 1.0, glow: float = 1.0):
     """Apply frame-preview alpha/glow values to an existing material."""
 
@@ -517,6 +664,7 @@ def copy_texture_with_sidecars(
     overwrite each other just because their color PNGs happen to be identical.
     """
 
+    texture_id = lowercase_resource_identifier(texture_id)
     source_path = Path(source).resolve()
     if not source_path.is_file() and not allow_missing_base:
         raise FileNotFoundError(str(source_path))
@@ -570,10 +718,14 @@ __all__ = [
     "split_resource_id",
     "resolve_texture_path",
     "load_texture_image",
+    "load_mask_image",
     "create_halo_material",
     "assign_material",
     "assign_primitive_materials",
+    "assign_mesh_material",
+    "mesh_mask_resolution_warning",
     "set_material_visual",
+    "set_mesh_mask_offset",
     "refresh_halo_material_settings",
     "texture_destination",
     "copy_texture_with_sidecars",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from .materials import mesh_mask_resolution_warning
 from .properties import TRANSITION_DEFAULT_GROUP
 
 try:
@@ -62,6 +63,35 @@ def _definition_primitive_count(scene, definition_id):
         for obj in scene.objects
         if obj.get("halo_role") == "primitive" and obj.get("halo_definition_id") == definition_id
     )
+
+
+def _mesh_mask_terms_for_panel(obj, axis):
+    try:
+        raw = json.loads(obj.get("halo_primitive_raw_json", obj.get("halo_raw_json", "{}")))
+    except (TypeError, ValueError):
+        return []
+    material = raw.get("material") if isinstance(raw, dict) else None
+    effects = material.get("effects") if isinstance(material, dict) else None
+    if not isinstance(effects, list):
+        return []
+    mask = next((value for value in effects if isinstance(value, dict)
+                 and str(value.get("type", "")) == "alpha_mask"), None)
+    uv = mask.get("uv_offset") if isinstance(mask, dict) else None
+    terms = uv.get(axis) if isinstance(uv, dict) else None
+    return terms if isinstance(terms, list) else []
+
+
+def _term_summary(term):
+    function = str(term.get("function", "linear")) if isinstance(term, dict) else "?"
+    def number(key, fallback=0):
+        try:
+            return f"{float(term.get(key, fallback)):g}"
+        except (AttributeError, TypeError, ValueError):
+            return str(term.get(key, fallback)) if isinstance(term, dict) else "?"
+    if function in {"sin", "cos"}:
+        amplitude = number("A", term.get("amplitude", 0))
+        return f"{function}: A={amplitude}, ω={number('omega')}, φ={number('phi')}"
+    return f"{function}: start={number('start')}, speed={number('speed')}"
 
 
 if bpy is not None:
@@ -325,12 +355,64 @@ if bpy is not None:
                     inner_import.target = "INNER"
                     inner_row.operator("halo.clear_inner_texture", text="使用外侧", icon="X")
                     box.prop(node, "segments", text="分段")
+                    box.prop(node, "size", text="尺寸")
+                elif node.primitive_type == "mesh":
+                    box.prop(node, "mesh_model", text="OBJ 模型")
+                    box.operator("halo.import_mesh_model", text="导入/重链接 OBJ", icon="IMPORT")
+                    box.prop(node, "texture", text="主纹理")
+                    texture_import = box.operator("halo.import_texture", text="导入主纹理 PNG", icon="IMAGE_DATA")
+                    texture_import.target = "OUTER"
+                    box.prop(node, "mesh_preserve_proportions", text="保持原始比例")
+                    if node.mesh_preserve_proportions:
+                        box.prop(node, "mesh_scale", text="统一缩放")
+                        box.label(text="scale=1 时，1 OBJ 单位对应 1 格", icon="INFO")
+                    else:
+                        box.prop(node, "mesh_size", text="目标包围盒尺寸")
+                    box.prop(node, "mesh_double_sided", text="双面材质")
+                    shader = box.box()
+                    shader.label(text="Mesh 简易 Shader", icon="SHADING_RENDERED")
+                    shader.prop(node, "mesh_mask_enabled", text="启用 Alpha Mask")
+                    if node.mesh_mask_enabled:
+                        shader.prop(node, "mesh_mask_texture", text="遮罩纹理")
+                        mask_import = shader.operator("halo.import_texture", text="导入遮罩 PNG", icon="IMAGE_DATA")
+                        mask_import.target = "MASK"
+                        material = obj.data.materials[0] if getattr(obj.data, "materials", None) else None
+                        resolution_warning = mesh_mask_resolution_warning(material)
+                        if resolution_warning:
+                            warning_box = shader.box()
+                            warning_box.alert = True
+                            warning_box.label(text="遮罩与主纹理像素比例不兼容", icon="ERROR")
+                            for line in resolution_warning.split("；"):
+                                warning_box.label(text=line)
+                        shader.prop(node, "mesh_mask_mode", text="遮罩模式")
+                        shader.prop(node, "mesh_mask_threshold", text="Step 阈值")
+                        shader.label(text="UV 循环偏移动画")
+                        axis_row = shader.row(align=True)
+                        axis_row.prop_enum(context.scene.halo_project, "mesh_mask_axis", "u", text="U")
+                        axis_row.prop_enum(context.scene.halo_project, "mesh_mask_axis", "v", text="V")
+                        terms = _mesh_mask_terms_for_panel(obj, context.scene.halo_project.mesh_mask_axis)
+                        if not terms:
+                            shader.label(text="此轴尚无动画项", icon="INFO")
+                        for index, term in enumerate(terms):
+                            row = shader.row(align=True)
+                            row.label(text=f"{index + 1}. {_term_summary(term)}")
+                            edit = row.operator("halo.mesh_mask_term_edit", text="", icon="GREASEPENCIL")
+                            edit.index = index
+                            up = row.operator("halo.mesh_mask_term_move", text="", icon="TRIA_UP")
+                            up.index = index
+                            up.direction = -1
+                            down = row.operator("halo.mesh_mask_term_move", text="", icon="TRIA_DOWN")
+                            down.index = index
+                            down.direction = 1
+                            remove = row.operator("halo.mesh_mask_term_remove", text="", icon="X")
+                            remove.index = index
+                        shader.operator("halo.mesh_mask_term_add", text="添加 UV 动画项", icon="ADD")
                 else:
                     box.prop(node, "texture", text="纹理")
                     texture_import = box.operator("halo.import_texture", text="导入 PNG", icon="IMAGE_DATA")
                     texture_import.target = "OUTER"
-                box.prop(node, "size", text="尺寸")
-                box.prop(node, "face_camera", text="面向相机")
+                    box.prop(node, "size", text="尺寸")
+                    box.prop(node, "face_camera", text="面向相机")
                 box.operator("halo.refresh_geometry", text="强制刷新", icon="FILE_REFRESH")
             try:
                 from .operators import _selected_sibling_nodes

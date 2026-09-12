@@ -71,22 +71,19 @@ def migrate_definition_textures(scene, item, old_id, namespace):
             if obj.get("halo_role") == "primitive":
                 node.texture = mapping.get(node.texture, node.texture)
                 node.inner_texture = mapping.get(node.inner_texture, node.inner_texture)
+                node.mesh_mask_texture = mapping.get(node.mesh_mask_texture, node.mesh_mask_texture)
                 obj["halo_texture_id"] = node.texture
                 obj["halo_inner_texture_id"] = node.inner_texture
+                obj["halo_mesh_mask_texture_id"] = node.mesh_mask_texture
         finally:
             obj.pop("halo_property_update_guard", None)
     return [obj for obj in objects if obj.get("halo_role") == "primitive"], notices
 
 
 def refresh_migrated_materials(scene, primitives):
-    from .blender_scene import definition_pack_root
-    from .materials import assign_primitive_materials
     from .handlers import update_animation
+    from .operators import _set_node_mesh
 
     for obj in primitives:
-        node = obj.halo_node
-        group = getattr(obj.parent, "halo_node", None)
-        assign_primitive_materials(obj, node.texture, node.inner_texture or None,
-                                   definition_pack_root(scene, obj.get("halo_definition_id", "")),
-                                   glowing=bool(group.glowing) if group else True)
+        _set_node_mesh(obj)
     update_animation(scene)

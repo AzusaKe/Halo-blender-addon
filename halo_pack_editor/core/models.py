@@ -16,10 +16,11 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
-from math import ceil, cos, pi, sin, isfinite
+from math import ceil, cos, floor, pi, sin, isfinite
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, MutableMapping, Optional, Sequence
 import json
+import re
 import uuid
 
 
@@ -93,7 +94,7 @@ class SchemaVersion:
         return self < other
 
 
-SchemaVersion.CURRENT = SchemaVersion(1, 0, 10)
+SchemaVersion.CURRENT = SchemaVersion(1, 1, 0)
 
 
 @dataclass(frozen=True)
@@ -110,7 +111,8 @@ class ResourceLocation:
             namespace, path = raw.split(":", 1)
         else:
             namespace, path = default_namespace, raw
-        if not namespace or not path:
+        if (not re.fullmatch(r"[a-z0-9_.-]+", namespace or "")
+                or not re.fullmatch(r"[a-z0-9/._-]+", path or "")):
             raise ValueError(f"invalid resource location: {value!r}")
         return cls(namespace, path)
 
@@ -378,6 +380,94 @@ class RingPrimitive:
 
 
 @dataclass
+class MeshAlphaMask:
+    texture: str
+    mode: str = "linear"
+    threshold: float = 0.5
+    offset_u: list[AnimationTerm] = field(default_factory=list)
+    offset_v: list[AnimationTerm] = field(default_factory=list)
+    raw: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
+
+    def evaluate_offset(self, time: float) -> Vec2:
+        def wrapped(terms: Iterable[AnimationTerm]) -> float:
+            value = sum(term.evaluate(time) for term in terms)
+            return value - floor(value)
+        return wrapped(self.offset_u), wrapped(self.offset_v)
+
+    def to_json(self) -> dict[str, Any]:
+        result = clone_json(self.raw) if isinstance(self.raw, Mapping) else {}
+        result.update({
+            "type": "alpha_mask",
+            "texture": self.texture,
+            "mode": self.mode,
+            "threshold": float(self.threshold),
+        })
+        old_uv = result.get("uv_offset")
+        uv = clone_json(dict(old_uv)) if isinstance(old_uv, Mapping) else {}
+        if self.offset_u or "u" in uv:
+            uv["u"] = [term.to_json() for term in self.offset_u]
+        if self.offset_v or "v" in uv:
+            uv["v"] = [term.to_json() for term in self.offset_v]
+        if uv:
+            result["uv_offset"] = uv
+        else:
+            result.pop("uv_offset", None)
+        return result
+
+
+@dataclass
+class MeshMaterial:
+    double_sided: bool = True
+    alpha_mask: MeshAlphaMask | None = None
+    raw: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
+
+    def to_json(self) -> dict[str, Any]:
+        result = clone_json(self.raw) if isinstance(self.raw, Mapping) else {}
+        result["double_sided"] = bool(self.double_sided)
+        effects = [clone_json(value) for value in result.get("effects", []) if isinstance(value, Mapping)]
+        effects = [value for value in effects if str(value.get("type", "")) != "alpha_mask"]
+        if self.alpha_mask is not None:
+            effects.insert(0, self.alpha_mask.to_json())
+        if effects or "effects" in result:
+            result["effects"] = effects
+        return result
+
+
+@dataclass
+class MeshPrimitive:
+    model: str
+    texture: str
+    size: Vec3 | None = (1.0, 1.0, 1.0)
+    preserve_proportions: bool = False
+    scale: float = 1.0
+    material: MeshMaterial = field(default_factory=MeshMaterial)
+    raw: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
+    uid: str = field(default_factory=_uid, repr=False, compare=False)
+    type: str = field(default="mesh", init=False)
+
+    def to_json(self) -> dict[str, Any]:
+        result = clone_json(self.raw) if isinstance(self.raw, Mapping) else {}
+        result.update({"type": "mesh", "model": self.model, "texture": self.texture})
+        if self.size is not None:
+            result["size"] = list(self.size)
+        elif self.preserve_proportions:
+            result.pop("size", None)
+        if self.preserve_proportions or "preserve_proportions" in result:
+            result["preserve_proportions"] = bool(self.preserve_proportions)
+        else:
+            result.pop("preserve_proportions", None)
+        if self.scale != 1.0 or "scale" in result:
+            result["scale"] = float(self.scale)
+        else:
+            result.pop("scale", None)
+        if self.material != MeshMaterial() or "material" in result:
+            result["material"] = self.material.to_json()
+        else:
+            result.pop("material", None)
+        return result
+
+
+@dataclass
 class RawPrimitive:
     """Unknown/future primitive retained for lossless pack editing."""
 
@@ -392,7 +482,7 @@ class RawPrimitive:
         return clone_json(self.raw)
 
 
-Primitive = BillboardPrimitive | RingPrimitive | RawPrimitive
+Primitive = BillboardPrimitive | RingPrimitive | MeshPrimitive | RawPrimitive
 
 
 @dataclass

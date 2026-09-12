@@ -7,7 +7,8 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 - 导入或导出资源包 ZIP、解包目录，以及包含多个命名空间和光环的整包。
 - 连续导入多个 ZIP/文件夹并合并为一个编辑项目；同 ID 光环自动给后来者添加数字后缀，来源与单个光环均可独立清除。
 - 使用 Blender Outliner 编辑与模组一致的组/图元父子树。
-- 精确生成 billboard 与带内外表面的 ring，解析 Minecraft 资源路径和 PNG 透明材质。
+- 精确生成 billboard、带内外表面的 ring，以及 Halo 2.0 原生 OBJ `mesh`，解析 Minecraft 资源路径和 PNG 透明材质。
+- Mesh 可导入/重链接 OBJ、在“三轴目标尺寸”和“保持原始比例 + 统一缩放”间切换、编辑单双面材质，并图形化编辑 `alpha_mask` 的纹理、linear/step、阈值和 U/V `sin`/`cos`/`linear` 循环偏移动画。
 - 提供 EEVEE 与 Cycles 一致性预览：抖动透明避免透明像素遮挡后方图元；显式内外纹理 Ring 使用单层双面预览，消除共面冲突和 Cycles 间接发光。
 - 编辑位置、YXZ 旋转、统一缩放、发光与 alpha/glow 继承等定义属性。
 - 编辑 `damping` 跟踪参数与角动量开关；当前仅做字段编辑和无损导入导出，不模拟阻尼运动。
@@ -21,17 +22,18 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 
 1. 使用 Blender 5.2 LTS 或更新版本。
 2. 打开“编辑 → 偏好设置 → 扩展”，选择“从磁盘安装”。
-3. 选择 `halo_pack_editor-0.3.7.zip` 并启用扩展。
+3. 选择 `halo_pack_editor-0.4.0.zip` 并启用扩展。
 4. 在 3D 视图按 `N`，打开“Halo 光环”标签页。
 
 ## 保存工程与修复旧贴图（0.3.2）
 
-- 普通导入/重链接 PNG（包括 Ring 内侧）会立即内嵌到 Blender Image；保存 `.blend` 时自动保存每个来源的资源副本，包括 labPBR、`pack.png`、`.png.mcmeta` 和未知文件。无需再手动“打包资源”，也不依赖系统 Temp。副本会增加 `.blend` 大小及保存耗时。
+- 普通导入/重链接 PNG（包括 Ring 内侧与 Mesh 遮罩）会立即内嵌到 Blender Image；保存 `.blend` 时自动保存每个来源的资源副本，包括 OBJ、labPBR、`pack.png`、`.png.mcmeta` 和未知文件。无需再手动“打包资源”，也不依赖系统 Temp。副本会增加 `.blend` 大小及保存耗时。
 - 重新打开时从内嵌副本创建独立的用户数据缓存，预览与导出都能使用；即使原 ZIP/文件夹和旧缓存已移走也可恢复。仅处理 Halo 资源，不会打包场景中其他模型的外部文件。内部 `.halo_resources_*.zip.base64` 文本是资源副本，请勿手动编辑或删除。
 - 旧工程：升级扩展后打开 `.blend`，在 **3D 视图 → N → Halo 光环 → 项目 / 资源包 → 修复并内嵌资源** 操作，然后另存一份 `.blend`。扩展会尝试从原资源包、仍存在的缓存或已打包图片恢复，保留现有组结构与编辑数据。
 - 若原包路径也已失效、图片从未打包且已无像素数据，就无法凭 JSON 还原图片。请先把原 ZIP/文件夹放回记录的位置，再点击修复；也可选择对应图元，使用“导入外侧 PNG / 导入内侧 PNG”重新链接。未恢复项目会在面板与验证结果中显示警告，详情打印到控制台。
 - 0.3.3 起，打开旧工程、保存或手动修复时，会在资源恢复之后自动清理无法恢复的 Halo Temp 图片数据块（含闲置图片）。不会删除磁盘文件、图元、材质节点或 JSON 贴图 ID；使用处改为缺图占位，方便重新链接。已打包、仍有像素数据、磁盘文件仍存在及非 Halo Temp 图片均保留。清理记录显示在项目面板，详细名称打印到控制台。
 - PNG 重复导入：同一来源/命名空间中已有内容相同的图片，会直接复用原资源 ID 和 Image 数据块；已有数字后缀副本或已绑定的不同文件名也可复用。PNG、labPBR 附图及 `.png.mcmeta` 按文件内容比较，不按文件名猜测。只有同名而内容不同才加后缀，避免改动其他图元的材质；不同来源保留独立资源缓存。
+- Minecraft 资源 ID 和导入的 PNG/OBJ 文件名统一转为小写。旧 `.blend` 或旧资源包中的大写主纹理、Ring 内侧、Mesh 遮罩、OBJ 及贴图伴随文件会在导出暂存区自动迁移并同步 JSON；小写化后同名同内容直接复用，不同内容使用 `_1`、`_2` 后缀。
 
 ## 导出贴图清理（0.3.4）
 
@@ -58,6 +60,8 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
    - 同组多个图元按照 Halo JSON 语义共享所属组变换。
    - 图元类型、纹理、尺寸、Ring 分段数和 `face_camera` 修改后会自动刷新预览，“强制刷新”用于手动恢复。
    - Ring 提供独立的“导入外侧 PNG”和“导入内侧 PNG”；“使用外侧”会清空 `inner_texture`，恢复模组使用外侧纹理绘制双面的默认行为。
+   - Mesh 图元提供“导入/重链接 OBJ”。OBJ 会先按 Halo 2.0 的实际加载规则验证，再复制到当前光环命名空间的 `models/halo/`；同路径同内容直接复用，只有内容冲突时添加数字后缀。默认 `size` 是 OBJ 被面引用的顶点包围盒目标尺寸，逐轴缩放且保持 OBJ 原点，不会自动居中；开启“保持原始比例”后忽略 `size`，用“统一缩放”整体缩放原始 OBJ 坐标，`scale=1` 时 1 OBJ 单位对应 1 格。
+   - Mesh 的“简易 Shader”可编辑 `double_sided` 和唯一效果 `alpha_mask`。遮罩读取 PNG 红色通道，`linear` 直接乘 Alpha，`step` 按阈值开关；U/V 循环偏移支持逐项新增、修改、排序、删除，并随时间轴预览。遮罩与主纹理可同尺寸，或让宽高同时使用相同的正整数倍/约数；若比例或倍数不符合，导入操作、部件面板和验证结果都会提醒调整 PNG 像素尺寸，但仍允许继续编辑和导出。
    - `face_camera` 会持续采用最近一次 3D 视图朝向；播放时间轴且父组同时执行位移/旋转动画时仍会在每帧动画求值后重新面向视图。关闭该属性时会从面板字段重新构建图元并恢复单位局部变换，清除预览摄像机旋转。
 3. 要把一个组设为另一个组的子组：在“大纲视图”或 3D 视图中选择要移动的组，在 3D 视图右侧栏的“Halo 光环”标签中展开“树形编辑”，点击“选择新父级…”，在列表中选择目标组并确认。该面板现在始终可见：选中图元时可先点“选择所属部件组”，选中光环根时会提示继续选择其下的组。选择“光环根（顶层）”可移回顶层；当前组及其所有子组会自动从候选项中排除以避免循环。“保持世界位置”开启时会重新计算局部 JSON 变换来保持当前外观，关闭时精确保留原局部 JSON 值。移动对话框可分别勾选是否携带位置、旋转、缩放、常驻动画、发光/继承和扩展/未知字段，默认全部勾选；取消勾选的字段会重置为 schema 默认值。
 4. 选择组或图元后，“部件 / 图元”面板底部的“在当前父级复制”会创建独立副本：组会连同完整子树复制，图元只复制自身；所有新节点都会获得新 UUID，组 ID 会自动改为唯一值。选择图元后，“迁移到其他父级…”会让你选择目标父级和新组 ID，并以复选框决定是否携带原所属组的位置、旋转、缩放、常驻动画、发光/继承、扩展/未知字段以及 startup/shutdown `id_overrides`，默认全部勾选。扩展会创建新子组并仅把当前图元移入其中，原组的其他图元和子组不受影响。
@@ -97,7 +101,7 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 
 ## JSON 兼容
 
-类型化编辑器以 Halo schema `1.0.10` 为准。原始 JSON AST 会随项目保存；未知键、旧版 `primitive`/`shape` 写法和未识别字段在导出时保留。高级编辑器允许直接修改完整 JSON，应用前会重新解析并验证。
+类型化编辑器以 Halo 2.0.0 的 schema `1.1.0` 为准，并继续兼容 1.0.x 的 Billboard/Ring 定义。原始 JSON AST 会随项目保存；未知键、旧版 `primitive`/`shape` 写法和未识别字段在导出时保留。高级编辑器允许直接修改完整 JSON，应用前会重新解析并验证。
 
 JSON 会统一输出为 UTF-8、两空格缩进；不保证原始空白逐字节不变。
 
@@ -106,7 +110,7 @@ JSON 会统一输出为 UTF-8、两空格缩进；不保证原始空白逐字节
 ```powershell
 python -m unittest discover -s tests -p 'test_*.py' -v
 blender --command extension validate halo_pack_editor
-blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.3.7.zip
+blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.4.0.zip
 ```
 
 Blender 后台集成测试脚本位于 `scripts/`。测试与下载缓存应放在 `F:\codex-cache\halo-blender-addon`，扩展自身不会依赖该路径。
