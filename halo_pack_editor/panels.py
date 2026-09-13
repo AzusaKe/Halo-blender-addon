@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 
-from .materials import mesh_mask_resolution_warning
 from .properties import TRANSITION_DEFAULT_GROUP
 
 try:
@@ -376,14 +375,6 @@ if bpy is not None:
                         shader.prop(node, "mesh_mask_texture", text="遮罩纹理")
                         mask_import = shader.operator("halo.import_texture", text="导入遮罩 PNG", icon="IMAGE_DATA")
                         mask_import.target = "MASK"
-                        material = obj.data.materials[0] if getattr(obj.data, "materials", None) else None
-                        resolution_warning = mesh_mask_resolution_warning(material)
-                        if resolution_warning:
-                            warning_box = shader.box()
-                            warning_box.alert = True
-                            warning_box.label(text="遮罩与主纹理像素比例不兼容", icon="ERROR")
-                            for line in resolution_warning.split("；"):
-                                warning_box.label(text=line)
                         shader.prop(node, "mesh_mask_mode", text="遮罩模式")
                         shader.prop(node, "mesh_mask_threshold", text="Step 阈值")
                         shader.label(text="UV 循环偏移动画")

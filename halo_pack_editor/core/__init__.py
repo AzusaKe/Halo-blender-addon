@@ -20,7 +20,6 @@ from .validation import (
     ValidationIssue,
     ValidationReport,
     assert_valid,
-    has_integral_texture_scale,
     validate_definition,
     validate_pack,
 )

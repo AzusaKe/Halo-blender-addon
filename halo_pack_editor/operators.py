@@ -40,7 +40,6 @@ from .materials import (
     assign_mesh_material,
     assign_primitive_materials,
     copy_texture_with_sidecars,
-    mesh_mask_resolution_warning,
     refresh_halo_material_settings,
     split_resource_id,
 )
@@ -813,11 +812,6 @@ def validate_scene(scene) -> dict[str, list[str]]:
                             errors.append(f"{obj.name}: Alpha Mask 模式必须为 linear 或 step")
                         if not 0.0 <= node.mesh_mask_threshold <= 1.0:
                             errors.append(f"{obj.name}: Alpha Mask 阈值必须在 0 到 1 之间")
-                        material = obj.data.materials[0] if getattr(obj.data, "materials", None) else None
-                        resolution_warning = mesh_mask_resolution_warning(material)
-                        message = f"{obj.name}: {resolution_warning}" if resolution_warning else ""
-                        if message and message not in warnings:
-                            warnings.append(message)
                 elif node.size[0] <= 0.0 or node.size[1] <= 0.0:
                     warnings.append(f"{obj.name}: 图元尺寸包含非正值")
                 if not node.texture:
@@ -1911,12 +1905,7 @@ if bpy is not None:
                 obj["halo_texture_id"] = texture_id
             _set_node_mesh(obj)
             side = "内侧" if self.target == "INNER" else "Alpha Mask" if self.target == "MASK" else "主"
-            material = obj.data.materials[0] if getattr(obj.data, "materials", None) else None
-            resolution_warning = mesh_mask_resolution_warning(material) if node.primitive_type == "mesh" else None
-            if resolution_warning:
-                self.report({"WARNING"}, f"已链接{side}纹理；{resolution_warning}")
-            else:
-                self.report({"INFO"}, f"已链接{side}纹理 {texture_id}")
+            self.report({"INFO"}, f"已链接{side}纹理 {texture_id}")
             return {"FINISHED"}
 
 

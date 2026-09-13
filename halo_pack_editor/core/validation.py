@@ -404,21 +404,6 @@ def _validate_texture(texture: str, report: ValidationReport, path: str) -> None
         report.error("unsafe_texture_path", "texture path contains an empty or parent component", path)
 
 
-def has_integral_texture_scale(first_width: int, first_height: int, second_width: int, second_height: int) -> bool:
-    """Match HaloCore's alpha-mask resolution compatibility rule exactly."""
-
-    dimensions = (first_width, first_height, second_width, second_height)
-    if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in dimensions):
-        return False
-
-    def is_integer_enlargement(wide_w: int, wide_h: int, small_w: int, small_h: int) -> bool:
-        return wide_w % small_w == 0 and wide_h % small_h == 0 \
-            and wide_w // small_w == wide_h // small_h
-
-    return is_integer_enlargement(first_width, first_height, second_width, second_height) \
-        or is_integer_enlargement(second_width, second_height, first_width, first_height)
-
-
 def _finite(report: ValidationReport, value: Any, path: str) -> None:
     try:
         if not isfinite(float(value)):
@@ -429,5 +414,4 @@ def _finite(report: ValidationReport, value: Any, path: str) -> None:
 
 __all__ = [
     "ValidationIssue", "ValidationReport", "validate_definition", "validate_pack", "assert_valid",
-    "has_integral_texture_scale",
 ]

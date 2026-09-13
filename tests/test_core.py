@@ -23,7 +23,6 @@ from halo_pack_editor.core import (
     definition_to_dict,
     effective_group_state,
     evaluate_definition_tree,
-    has_integral_texture_scale,
     load_pack,
     mc_to_blender,
     mc_to_blender_matrix,
@@ -178,14 +177,6 @@ class CoreModelTests(unittest.TestCase):
         })
         self.assertTrue(any(issue.code == "mesh_size_required"
                             for issue in validate_definition(missing_size).errors))
-
-    def test_mesh_mask_dimensions_require_uniform_integer_scale(self):
-        self.assertTrue(has_integral_texture_scale(32, 16, 16, 8))
-        self.assertTrue(has_integral_texture_scale(32, 16, 32, 16))
-        self.assertTrue(has_integral_texture_scale(32, 16, 96, 48))
-        self.assertFalse(has_integral_texture_scale(32, 16, 64, 16))
-        self.assertFalse(has_integral_texture_scale(32, 16, 48, 24))
-        self.assertFalse(has_integral_texture_scale(0, 16, 32, 16))
 
     def test_coordinate_change_and_transform_conjugation(self):
         self.assertEqual(mc_to_blender((1, 2, 3)), (1, -3, 2))

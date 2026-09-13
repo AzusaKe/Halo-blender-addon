@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Iterable
 
 from .core.resource_paths import lowercase_resource_identifier
-from .core.validation import has_integral_texture_scale
 
 
 def split_resource_id(resource_id: str, default_namespace: str = "minecraft") -> tuple[str, str]:
@@ -575,29 +574,6 @@ def assign_mesh_material(
     return material
 
 
-def mesh_mask_resolution_warning(material) -> str | None:
-    """Describe an incompatible loaded base/mask PNG pair, if present."""
-
-    if material is None or not getattr(material, "use_nodes", False):
-        return None
-    nodes = material.node_tree.nodes
-    mask_node = nodes.get("Halo Mask Texture")
-    base_node = next((node for node in nodes if node.bl_idname == "ShaderNodeTexImage"
-                      and node.name not in {"Halo Mask Texture", "Halo Backface Texture"}), None)
-    if mask_node is None or mask_node.image is None or base_node is None or base_node.image is None:
-        return None
-    if mask_node.image.get("halo_missing_texture") or base_node.image.get("halo_missing_texture"):
-        return None
-    base_width, base_height = (int(value) for value in base_node.image.size[:2])
-    mask_width, mask_height = (int(value) for value in mask_node.image.size[:2])
-    if has_integral_texture_scale(base_width, base_height, mask_width, mask_height):
-        return None
-    return (
-        f"Alpha Mask 为 {mask_width}×{mask_height}，主纹理为 {base_width}×{base_height}；"
-        f"请调整 PNG 像素尺寸，使宽高使用同一整数倍（例如 {base_width}×{base_height}）"
-    )
-
-
 def set_mesh_mask_offset(material, offset_u: float, offset_v: float):
     if material is None or not material.use_nodes:
         return
@@ -723,7 +699,6 @@ __all__ = [
     "assign_material",
     "assign_primitive_materials",
     "assign_mesh_material",
-    "mesh_mask_resolution_warning",
     "set_material_visual",
     "set_mesh_mask_offset",
     "refresh_halo_material_settings",

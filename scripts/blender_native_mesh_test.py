@@ -18,7 +18,6 @@ sys.path.insert(0, str(project_root))
 
 import halo_pack_editor
 from halo_pack_editor import blender_scene, handlers, operators, panels
-from halo_pack_editor.materials import mesh_mask_resolution_warning
 from halo_pack_editor.obj_mesh import load_obj_resource, resolve_model_path
 from halo_pack_editor.resource_store import embed_resources, ensure_resources
 
@@ -80,9 +79,6 @@ preserve_obj.halo_node.mesh_preserve_proportions = True
 assert all(abs(actual - expected) < 1e-5
            for actual, expected in zip(preserve_obj.dimensions, expected_dimensions))
 
-resolution_meshes = [obj for obj in meshes if obj.get("halo_definition_id") == "halo:mesh_mask_resolution_demo"]
-assert all(mesh_mask_resolution_warning(obj.data.materials[0]) is None for obj in resolution_meshes)
-
 mask_obj = next(obj for obj in meshes if obj.get("halo_definition_id") == "halo:mesh_mask_demo")
 step_obj = next(obj for obj in meshes if obj.get("halo_definition_id") == "halo:mesh_step_demo")
 assert mask_obj.halo_node.mesh_mask_enabled
@@ -117,7 +113,9 @@ assert bpy.ops.halo.mesh_mask_term_edit(index=before, function="cos", amplitude=
 assert panels._mesh_mask_terms_for_panel(mask_obj, "u")[before]["function"] == "cos"
 
 # External OBJ/PNG linking uses the definition namespace, lower-cases resource
-# names and validates the model before mutating the selected primitive.
+# names and validates the model before mutating the selected primitive. The
+# arbitrary 2x3 mask deliberately differs from the 32x32 base: Halo no longer
+# constrains base/mask dimensions or aspect ratios.
 external_obj = test_root / "External.OBJ"
 external_mask = test_root / "External_Mask.PNG"
 shutil.copy2(model_root / "mesh_demo.obj", external_obj)
@@ -133,10 +131,8 @@ assert bpy.ops.halo.import_mesh_model(filepath=str(external_obj)) == {"FINISHED"
 assert mask_obj.halo_node.mesh_model == "halo:models/halo/external.obj"
 assert bpy.ops.halo.import_texture(filepath=str(external_mask), target="MASK") == {"FINISHED"}
 assert mask_obj.halo_node.mesh_mask_texture == "halo:textures/halo/external_mask.png"
-assert mesh_mask_resolution_warning(mask_obj.data.materials[0]) is not None
 validation = operators.validate_scene(scene)
-assert any("请调整 PNG 像素尺寸" in message for message in validation["warnings"])
-assert not any("Alpha Mask 与主纹理尺寸" in message for message in validation["errors"])
+assert not validation["errors"], validation
 
 # OBJ and both PNG inputs survive loss of the editable cache through the
 # source archive embedded in a .blend save.
