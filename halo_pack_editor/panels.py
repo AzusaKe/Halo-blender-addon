@@ -357,7 +357,9 @@ if bpy is not None:
                     box.prop(node, "size", text="尺寸")
                 elif node.primitive_type == "mesh":
                     box.prop(node, "mesh_model", text="OBJ 模型")
-                    box.operator("halo.import_mesh_model", text="导入/重链接 OBJ", icon="IMPORT")
+                    model_row = box.row(align=True)
+                    model_row.operator("halo.import_mesh_model", text="外部 OBJ", icon="IMPORT")
+                    model_row.operator("halo.import_scene_mesh", text="项目 Mesh…", icon="MESH_DATA")
                     box.prop(node, "texture", text="主纹理")
                     texture_import = box.operator("halo.import_texture", text="导入主纹理 PNG", icon="IMAGE_DATA")
                     texture_import.target = "OUTER"

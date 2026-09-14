@@ -1,11 +1,21 @@
-# Halo Pack Editor 0.4.0 测试报告
+# Halo Pack Editor 0.5.0 测试报告
 
-测试日期：2026-09-12
+测试日期：2026-09-14
 宿主：Blender 5.2.0 LTS（`fbe6228777e7`）  
-交付包：`dist/halo_pack_editor-0.4.0.zip`
-SHA-256：`4A37339793233105121C970F35290E0B55E8F9C199AEBC81295C2AAF24F4F083`
+交付包：`dist/halo_pack_editor-0.5.0.zip`
+SHA-256：`01A31AFCA59A49DCA875657D5BDE73B40B5AEF97FC3F1471A15D6DF9E9C1603B`
 
-## 0.4.0 Halo 2.0 原生 Mesh 专项验收
+## 0.5.0 项目 Mesh 转原生 OBJ 专项验收
+
+- 在 Halo 原生 Mesh 图元面板加入“项目 Mesh…”：从当前场景 Collection 选择普通 Mesh，可求值修改器，并可在“保持场景外观”和“仅源网格局部坐标”间切换。前者通过目标父组逆矩阵把对象 G/R/S 写入 OBJ 顶点，Blender→Minecraft→Blender 往返后的四个世界坐标与源对象逐项一致。
+- 自定义 OBJ 写出器只生成 `v`、`vt`、三角 `f`；四边面实测输出 2 个三角形，并在复制到资源缓存前通过与 Halo 导入一致的 `parse_obj` 完整验证。退化三角形跳过并提醒，无 UV 的无材质模型写入合法占位 UV，不导出 MTL、骨骼、动画或其他不支持语句。
+- “直接导入图像”实测从已打包 Blender Image 读取像素、保留活动 UV、生成当前定义命名空间下的 PNG 资源并立即重建预览，全程不启动 Cycles。同图像内容可复用已有生成资源；外部 PNG 继续由现有图片家族逻辑携带 labPBR 与元数据。
+- “Cycles 烘焙”实测重新生成 Smart UV，以 32×32、2 像素 margin 对 Principled 材质完成颜色与 Alpha 两次烘焙，生成图片打包进 `.blend` 并进入最终 ZIP；源对象位置、Mesh 拓扑和原 UV 数据保持不变。AUTO 模式在全 Principled、全 Emission 和复杂/混合材质之间选择基础色、发光或综合烘焙。
+- 修复 Smart UV 同时替换源材质采样 UV 导致贴图切碎的问题：专项把源四边面全部角固定采样同一蓝色像素，同时生成独立烘焙 UV；最终 PNG 的可见像素不出现原图其他红/绿色，证明源采样 UV 与目标 UV 已隔离。直接导入专项在 Image Texture 与 Principled 之间插入实际 `ShaderNodeMix`，确认可提取唯一图像并给出忽略节点运算提醒，不再强制回退 Cycles。
+- 完整 `scripts/build.ps1` 通过：51 项纯 Python、Blender Hina/Mesh 转子组/项目 Mesh/原生 Mesh/多来源/动画/资源保存重开/EEVEE 与 Cycles 渲染、Extension 源码与 ZIP validate/build，以及 Halo Java 解析器 `JAVA_PARSER_OK 5`。日志中的批量选择、过渡边界和无效 JSON Error 是预期负向测试。
+- 最终 ZIP 在隔离配置 `F:\codex-cache\halo-blender-addon\isolated-0.5.0-uvfix-20260914` 通过 `extension install-file` 安装启用，并以真实模块 `bl_ext.user_default.halo_pack_editor` 确认 `halo.import_scene_mesh` 注册及默认材质模式；未覆盖用户当前安装。Minecraft 客户端中的最终目视对照仍留给人工验收。
+
+## 0.4.0 Halo 2.0 原生 Mesh 历史验收
 
 - 跟进 Halo 2.x 的 Mesh 尺寸契约：面板可切换 `preserve_proportions` 并编辑统一 `scale`；开启时保留 OBJ 作者坐标与原点、允许 JSON 省略 `size`，关闭时继续逐轴拟合。基础纹理与 Alpha Mask 的尺寸及长宽比不再受限，插件同步移除了导入警告、面板提示和场景验证规则。
 - Blender 5.2 专项同时导入 `mesh_preserve_demo` 与 `mesh_mask_resolution_demo`，验证统一缩放包围盒及保持比例 JSON 往返；另将 32×32 主纹理与任意 2×3 遮罩组合，确认导入、场景校验和导出不因分辨率关系报错。

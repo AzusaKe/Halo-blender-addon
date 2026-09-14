@@ -45,6 +45,7 @@ from .materials import (
 )
 from .mesh_conversion import convert_mesh_to_halo, iter_mesh_conversion
 from .obj_mesh import build_blender_mesh, copy_obj_resource, load_obj_resource
+from .scene_mesh_import import import_scene_mesh
 from .properties import EASING_ITEMS, TRANSITION_DEFAULT_GROUP
 from .core.resource_paths import lowercase_resource_identifier
 
@@ -1821,6 +1822,146 @@ if bpy is not None:
             return {"FINISHED"}
 
 
+    class HALO_OT_import_scene_mesh(bpy.types.Operator):
+        bl_idname = "halo.import_scene_mesh"
+        bl_label = "从项目 Mesh 导入"
+        bl_description = "把当前场景中的普通 Mesh 转为 Halo 支持的三角化 OBJ，并可直接导入或烘焙材质"
+        bl_options = {"REGISTER", "UNDO"}
+
+        source_object: EnumProperty(name="源网格", items=_mesh_source_items)
+        apply_modifiers: BoolProperty(
+            name="应用修改器结果",
+            description="导出当前可见的修改器求值结果；不会修改源对象",
+            default=True,
+        )
+        coordinate_space: EnumProperty(
+            name="坐标处理",
+            items=(
+                ("TARGET_LOCAL", "保持场景外观", "把源对象相对目标父组的变换烘焙进 OBJ，导入后尽量保持当前场景位置和外形"),
+                ("SOURCE_LOCAL", "仅源网格局部坐标", "忽略源对象 G/R/S，把 Mesh 数据的局部原点放到目标父组原点"),
+            ),
+            default="TARGET_LOCAL",
+        )
+        material_mode: EnumProperty(
+            name="材质处理",
+            items=(
+                ("NONE", "不导入材质", "只替换 OBJ，保留 Halo Mesh 图元当前主纹理"),
+                ("DIRECT", "直接导入图像", "保留现有 UV，复制唯一 Image Texture；Mix 等图形会忽略颜色运算，多张纹理仍需 Cycles 合并"),
+                ("BAKE", "Cycles 烘焙", "把多个材质和节点结果烘焙到一张 Halo PNG"),
+            ),
+            default="NONE",
+        )
+        regenerate_bake_uv: BoolProperty(
+            name="重新生成烘焙 UV",
+            description="用 Smart UV 创建不重叠的统一贴图布局；关闭时保留活动 UV，若没有 UV 仍会自动生成",
+            default=True,
+        )
+        texture_resolution: IntProperty(
+            name="烘焙分辨率",
+            default=1024,
+            min=16,
+            max=8192,
+        )
+        bake_margin: IntProperty(
+            name="UV 边缘扩张",
+            description="Cycles 烘焙在 UV 岛外扩张的像素数，用于减轻缩小时的接缝",
+            default=16,
+            min=0,
+            max=64,
+        )
+        bake_mode: EnumProperty(
+            name="烘焙模式",
+            items=(
+                ("AUTO", "自动", "全 Principled 时烘焙无光照基础色，全 Emission 时烘焙发光，其余使用综合烘焙"),
+                ("DIFFUSE", "基础色", "烘焙 Diffuse/Principled 基础色，不包含场景光照"),
+                ("EMIT", "发光", "烘焙材质的 Emission 输出"),
+                ("COMBINED", "综合", "烘焙完整材质和当前场景光照"),
+            ),
+            default="AUTO",
+        )
+
+        @classmethod
+        def poll(cls, context):
+            return _active_mesh_primitive(context) is not None
+
+        def invoke(self, context, _event):
+            items = _mesh_source_items(self, context)
+            if items:
+                self.source_object = items[0][0]
+            return context.window_manager.invoke_props_dialog(self, width=520)
+
+        def draw(self, _context):
+            layout = self.layout
+            layout.prop(self, "source_object")
+            layout.prop(self, "apply_modifiers")
+            layout.prop(self, "coordinate_space")
+            layout.prop(self, "material_mode")
+            if self.material_mode == "DIRECT":
+                box = layout.box()
+                box.label(text="保留源活动 UV；简单直连或复杂图中的唯一 Image Texture", icon="INFO")
+                box.label(text="Mix/颜色运算不会写入 Halo；多张图请使用 Cycles")
+                box.label(text="支持外部、已打包及生成图像；此模式不启动 Cycles")
+            elif self.material_mode == "BAKE":
+                layout.prop(self, "regenerate_bake_uv")
+                layout.prop(self, "texture_resolution")
+                layout.prop(self, "bake_margin")
+                layout.prop(self, "bake_mode")
+                box = layout.box()
+                box.label(text="Blender 5.2 的材质烘焙由 Cycles 执行", icon="RENDER_STILL")
+                box.label(text="复杂透明节点可能需要烘焙后检查")
+            box = layout.box()
+            box.label(text="输出始终三角化，并移除材质库、骨骼、动画等不受支持内容", icon="MESH_DATA")
+            box.label(text="源对象与源 Mesh 数据不会被修改")
+
+        def execute(self, context):
+            target = _active_mesh_primitive(context)
+            source = context.scene.objects.get(self.source_object) if self.source_object != "__NONE__" else None
+            if target is None:
+                self.report({"ERROR"}, "请先选择一个 Halo 原生 Mesh 图元")
+                return {"CANCELLED"}
+            if source is None or source.type != "MESH" or source.get("halo_role"):
+                self.report({"ERROR"}, "请选择当前场景中的普通 Mesh 对象")
+                return {"CANCELLED"}
+            try:
+                result = import_scene_mesh(
+                    context,
+                    source,
+                    target,
+                    apply_modifiers=self.apply_modifiers,
+                    coordinate_space=self.coordinate_space,
+                    material_mode=self.material_mode,
+                    regenerate_bake_uv=self.regenerate_bake_uv,
+                    texture_resolution=self.texture_resolution,
+                    bake_margin=self.bake_margin,
+                    bake_mode=self.bake_mode,
+                )
+                node = target.halo_node
+                node.mesh_model = result.model_id
+                # The generated OBJ already contains the authored coordinates;
+                # avoid silently fitting it back into the old bounding box.
+                node.mesh_preserve_proportions = True
+                node.mesh_scale = 1.0
+                if result.texture_id:
+                    node.texture = result.texture_id
+                    target["halo_texture_id"] = result.texture_id
+                _set_node_mesh(target)
+                sync_definition_from_scene(context.scene, target.get("halo_definition_id", ""))
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                self.report({"ERROR"}, f"项目 Mesh 导入失败：{exc}")
+                return {"CANCELLED"}
+            _select_object(context, target)
+            if result.warnings:
+                for warning in result.warnings:
+                    print("Halo 项目 Mesh 导入：", warning)
+                self.report({"WARNING"}, f"已生成 {result.triangle_count} 个三角形；另有 {len(result.warnings)} 条提醒")
+            else:
+                suffix = "并导入材质" if result.texture_id else ""
+                self.report({"INFO"}, f"已从 {source.name} 生成 {result.triangle_count} 个三角形{suffix}")
+            return {"FINISHED"}
+
+
     class HALO_OT_import_texture(bpy.types.Operator, ImportHelper):
         bl_idname = "halo.import_texture"
         bl_label = "导入/重链接 PNG"
@@ -2862,6 +3003,7 @@ if bpy is not None:
         HALO_OT_move_primitive,
         HALO_OT_refresh_geometry,
         HALO_OT_import_mesh_model,
+        HALO_OT_import_scene_mesh,
         HALO_OT_import_texture,
         HALO_OT_clear_inner_texture,
         HALO_OT_pack_resources,

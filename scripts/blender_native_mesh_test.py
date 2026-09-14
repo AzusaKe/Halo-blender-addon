@@ -112,6 +112,102 @@ assert len(panels._mesh_mask_terms_for_panel(mask_obj, "u")) == before + 1
 assert bpy.ops.halo.mesh_mask_term_edit(index=before, function="cos", amplitude=0.2, omega=2.0, phi=0.3) == {"FINISHED"}
 assert panels._mesh_mask_terms_for_panel(mask_obj, "u")[before]["function"] == "cos"
 
+# A regular project Mesh can replace a native Halo Mesh without using an
+# external OBJ.  The bridge bakes the source object's transform relative to
+# the target group, triangulates the quad, and preserves its authored UVs.
+project_mesh = bpy.data.meshes.new("Project Mesh Source")
+project_mesh.from_pydata(
+    [(-0.5, -0.25, 0.0), (0.5, -0.25, 0.0), (0.5, 0.25, 0.0), (-0.5, 0.25, 0.0)],
+    [],
+    [(0, 1, 2, 3)],
+)
+project_mesh.update()
+project_uv = project_mesh.uv_layers.new(name="Project UV")
+for loop, uv in zip(project_uv.data, ((0, 0), (1, 0), (1, 1), (0, 1))):
+    loop.uv = uv
+project_image = bpy.data.images.new("Project Atlas", width=4, height=4, alpha=True)
+project_image.pixels = [component for y in range(4) for x in range(4)
+                        for component in (x / 3.0, y / 3.0, 0.25, 1.0)]
+project_image.pack()
+project_material = bpy.data.materials.new("Project Direct Image")
+project_material.use_nodes = True
+project_nodes = project_material.node_tree.nodes
+project_links = project_material.node_tree.links
+project_shader = next(node for node in project_nodes if node.bl_idname == "ShaderNodeBsdfPrincipled")
+project_texture = project_nodes.new("ShaderNodeTexImage")
+project_texture.image = project_image
+project_mix = project_nodes.new("ShaderNodeMix")
+project_mix.data_type = "RGBA"
+project_mix.inputs["Factor"].default_value = 0.0
+project_links.new(project_texture.outputs["Color"], project_mix.inputs[6])
+project_links.new(project_mix.outputs[2], project_shader.inputs["Base Color"])
+project_links.new(project_texture.outputs["Alpha"], project_shader.inputs["Alpha"])
+project_mesh.materials.append(project_material)
+project_source = bpy.data.objects.new("Imported FBX Part", project_mesh)
+scene.collection.objects.link(project_source)
+project_source.location = (0.31, -0.27, 0.42)
+project_source.rotation_euler = (0.17, -0.22, 0.11)
+bpy.context.view_layer.update()
+for selected in bpy.context.selected_objects:
+    selected.select_set(False)
+mask_obj.select_set(True)
+bpy.context.view_layer.objects.active = mask_obj
+source_world = sorted(tuple(round(value, 5) for value in project_source.matrix_world @ vertex.co)
+                      for vertex in project_mesh.vertices)
+assert bpy.ops.halo.import_scene_mesh(
+    source_object=project_source.name,
+    apply_modifiers=True,
+    coordinate_space="TARGET_LOCAL",
+    material_mode="DIRECT",
+) == {"FINISHED"}
+scene_model = load_obj_resource(mask_obj.halo_node.mesh_model, blender_scene.definition_pack_root(scene, "halo:mesh_mask_demo"))
+assert scene_model.triangle_count == 2
+assert mask_obj.halo_node.mesh_preserve_proportions and abs(mask_obj.halo_node.mesh_scale - 1.0) < 1e-6
+assert mask_obj.halo_node.texture.startswith("halo:textures/halo/project_atlas")
+assert any(image.get("halo_generated_texture") and image.get("halo_texture_id") == mask_obj.halo_node.texture
+           for image in bpy.data.images)
+target_world = sorted({tuple(round(value, 5) for value in mask_obj.matrix_world @ vertex.co)
+                       for vertex in mask_obj.data.vertices})
+assert source_world == target_world, (source_world, target_world)
+
+# Cycles baking uses a fresh Smart UV atlas and produces one packed/generated
+# Halo texture. The source sampling UV deliberately maps every corner to one
+# pixel: if the bake atlas accidentally replaced that UV (the original bug),
+# the result would contain the complete multicolor atlas instead of one color.
+bake_mesh = project_mesh.copy()
+bake_mesh.name = "Bake UV Probe"
+bake_uv = bake_mesh.uv_layers.active
+for loop in bake_uv.data:
+    loop.uv = (0.125, 0.125)
+bake_source = bpy.data.objects.new("Bake UV Probe", bake_mesh)
+scene.collection.objects.link(bake_source)
+original_uvs = [tuple(loop.uv) for loop in bake_uv.data]
+for selected in bpy.context.selected_objects:
+    selected.select_set(False)
+step_obj.select_set(True)
+bpy.context.view_layer.objects.active = step_obj
+assert bpy.ops.halo.import_scene_mesh(
+    source_object=bake_source.name,
+    apply_modifiers=True,
+    coordinate_space="SOURCE_LOCAL",
+    material_mode="BAKE",
+    regenerate_bake_uv=True,
+    texture_resolution=32,
+    bake_margin=2,
+    bake_mode="AUTO",
+) == {"FINISHED"}
+assert step_obj.halo_node.texture.startswith("halo:textures/halo/bake_uv_probe_bake")
+baked_image = next(image for image in bpy.data.images
+                   if image.get("halo_generated_texture") and image.get("halo_texture_id") == step_obj.halo_node.texture)
+assert tuple(baked_image.size) == (32, 32) and baked_image.packed_file
+baked_pixels = list(baked_image.pixels)
+visible = [baked_pixels[offset:offset + 3] for offset in range(0, len(baked_pixels), 4)
+           if baked_pixels[offset + 3] > 0.05]
+assert visible, (max(baked_pixels[3::4]), max(baked_pixels[0::4]), max(baked_pixels[1::4]))
+assert max(pixel[0] for pixel in visible) < 0.03 and max(pixel[1] for pixel in visible) < 0.03
+assert max(pixel[2] for pixel in visible) > 0.2, "Bake sampled through Halo Bake UV instead of source UV"
+assert original_uvs == [tuple(loop.uv) for loop in bake_uv.data]
+
 # External OBJ/PNG linking uses the definition namespace, lower-cases resource
 # names and validates the model before mutating the selected primitive. The
 # arbitrary 2x3 mask deliberately differs from the 32x32 base: Halo no longer
@@ -127,6 +223,10 @@ generated_mask.filepath_raw = str(external_mask)
 generated_mask.file_format = "PNG"
 generated_mask.save()
 bpy.data.images.remove(generated_mask)
+for selected in bpy.context.selected_objects:
+    selected.select_set(False)
+mask_obj.select_set(True)
+bpy.context.view_layer.objects.active = mask_obj
 assert bpy.ops.halo.import_mesh_model(filepath=str(external_obj)) == {"FINISHED"}
 assert mask_obj.halo_node.mesh_model == "halo:models/halo/external.obj"
 assert bpy.ops.halo.import_texture(filepath=str(external_mask), target="MASK") == {"FINISHED"}
@@ -153,6 +253,7 @@ with zipfile.ZipFile(target) as archive:
     names = set(archive.namelist())
     assert "assets/halo/models/halo/external.obj" in names
     assert "assets/halo/textures/halo/external_mask.png" in names
+    assert any(name.startswith("assets/halo/textures/halo/bake_uv_probe_bake") for name in names)
     payload = json.loads(archive.read("assets/halo/halo_definitions/mesh_mask_demo.json"))
     primitive = payload["layers"][0]["primitive"]
     assert primitive["type"] == "mesh"

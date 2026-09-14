@@ -1,6 +1,7 @@
 # 兼容性说明
 
 - Blender：最低 5.2.0 LTS，不设置最高版本。
+- 项目 Mesh 转原生 OBJ（0.5.0）：从当前场景选择非 Halo Mesh，可求值可见修改器，并选择把源对象相对目标父组的变换烘焙进模型或只使用源 Mesh 局部坐标。写出时把 Blender 坐标反变换为 Minecraft 坐标，所有面通过 loop triangle 输出为带 UV 三角形，仅保留 `v`、`vt`、`f`；无 UV 且不导入材质时生成占位 UV。直接材质模式优先读取 Principled/Emission 直连图像，也能从 Mix 等复杂图中提取全模型唯一的图像及 UV Map，同时明确忽略节点运算；多图像或 Mapping/Generated 坐标拒绝猜测。烘焙模式保留原活动/渲染 UV 供源材质采样，另建独立 Smart UV 作为 Cycles 目标与最终 OBJ UV，把多材质输出为单张可配置分辨率及 margin 的 PNG。复杂透明节点无法归约到 Principled Alpha 时按不透明并警告。Blender 5.2 不提供等价的 EEVEE 材质烘焙操作器。
 - Halo 2.0 原生 Mesh（0.4.0）：类型化支持 schema 1.1.0 的 `mesh` 图元；按模组 `ObjMeshLoader` 接受带 UV 的三角形与平面凸四边形、正/负独立索引及可选法线，四边形按同样顺序三角化。默认由 `size[x,y,z]` 对 OBJ 被引用顶点的包围盒逐轴缩放并保留作者原点；`preserve_proportions:true` 时 `size` 可省略且被忽略，改由非负有限数 `scale` 统一缩放原始 XYZ（默认 1 OBJ 单位对应 1 格）。随后使用统一 Minecraft→Blender 坐标转换。OBJ 可从面板验证并复制/重链接到当前定义命名空间，同内容复用、异内容加后缀；缺失或非法模型使用醒目占位几何并给出验证警告，原 JSON 仍可导出。
 - 资源路径大小写（0.4.0）：新导入 PNG/OBJ 的命名空间、资源路径和文件名全部规范为小写。导出旧工程时同步迁移 JSON 中的 `texture`、`inner_texture`、Mesh `model`/`alpha_mask.texture` 及对应文件家族；大小写折叠后同内容复用，异内容添加数字后缀，避免 Halo/Minecraft 因非法大写资源 ID 跳过整个定义。
 - Mesh 简易 Shader（0.4.0）：图形化编辑 `material.double_sided` 以及唯一 `alpha_mask` 效果。遮罩 PNG 以 Non-Color、Closest、Repeat 读取红通道；linear 直接乘基础 PNG Alpha，step 精确实现 `red >= threshold`。U/V 偏移分别对 `sin`、`cos`、`linear` 项求和并循环到 `[0,1)`，在时间轴每帧更新；每个 Mesh 使用独立 Blender 材质，避免共享贴图的图元互相覆盖动画 uniform。跟随 Halo 2.x 当前契约，基础纹理与遮罩各自按原生分辨率和归一化 UV 采样，尺寸与长宽比无需相同；插件不再检查整数倍关系，也不重采样图片。

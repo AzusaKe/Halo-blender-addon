@@ -1,3 +1,5 @@
+[English](README.md) | 中文
+
 # Halo Pack Editor
 
 Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩展。它可以导入、预览、编辑并重新导出资源包中的光环定义，同时保留资源包内未知文件和 JSON 未识别字段。
@@ -23,6 +25,7 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 - 使用 Blender Outliner 编辑与模组一致的组/图元父子树。
 - 精确生成 billboard、带内外表面的 ring，以及 Halo 2.0 原生 OBJ `mesh`，解析 Minecraft 资源路径和 PNG 透明材质。
 - Mesh 可导入/重链接 OBJ、在“三轴目标尺寸”和“保持原始比例 + 统一缩放”间切换、编辑单双面材质，并图形化编辑 `alpha_mask` 的纹理、linear/step、阈值和 U/V `sin`/`cos`/`linear` 循环偏移动画。
+- Halo 原生 Mesh 图元可直接从当前 Blender 项目选择普通 Mesh（包括先导入的 FBX、glTF/GLB 等），自动求值修改器、转换坐标并输出模组支持的纯三角 OBJ；材质可不处理、直接复用单一图像，或用 Cycles 烘焙为统一 PNG。
 - 提供 EEVEE 与 Cycles 一致性预览：抖动透明避免透明像素遮挡后方图元；显式内外纹理 Ring 使用单层双面预览，消除共面冲突和 Cycles 间接发光。
 - 编辑位置、YXZ 旋转、统一缩放、发光与 alpha/glow 继承等定义属性。
 - 编辑 `damping` 跟踪参数与角动量开关；当前仅做字段编辑和无损导入导出，不模拟阻尼运动。
@@ -75,6 +78,10 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
    - 图元类型、纹理、尺寸、Ring 分段数和 `face_camera` 修改后会自动刷新预览，“强制刷新”用于手动恢复。
    - Ring 提供独立的“导入外侧 PNG”和“导入内侧 PNG”；“使用外侧”会清空 `inner_texture`，恢复模组使用外侧纹理绘制双面的默认行为。
    - Mesh 图元提供“导入/重链接 OBJ”。OBJ 会先按 Halo 2.0 的实际加载规则验证，再复制到当前光环命名空间的 `models/halo/`；同路径同内容直接复用，只有内容冲突时添加数字后缀。默认 `size` 是 OBJ 被面引用的顶点包围盒目标尺寸，逐轴缩放且保持 OBJ 原点，不会自动居中；开启“保持原始比例”后忽略 `size`，用“统一缩放”整体缩放原始 OBJ 坐标，`scale=1` 时 1 OBJ 单位对应 1 格。
+   - 选择 Halo 原生 Mesh 图元后，点击“项目 Mesh…”可从当前场景 Collection 选择普通 Mesh。默认“保持场景外观”会把源对象相对目标父组的位置、旋转和缩放烘焙进模型；“仅源网格局部坐标”则忽略对象 G/R/S。修改器默认按可见结果求值，源对象与源 Mesh 数据始终不修改。
+   - 项目 Mesh 输出只包含 Halo 支持的 `v`、`vt` 和三角 `f`，四边面与 N-gon 都会在输出时三角化，不写入 MTL、骨骼、动画或其他 OBJ 扩展。无材质模式保留图元现有主纹理；若源网格无 UV，会写入占位 UV 并提示。
+   - “直接导入图像”保留活动 UV。简单材质可直接读取 Principled/Emission 的 Image Texture；对于 FBX/glTF/VRM 常见的 Mix 图，只要所有有效材质中最终只有同一张图像及同一 UV Map，也会提取该图并提醒 Mix、颜色、明暗和透明运算不会写入 Halo。它会复制外部 PNG 及 labPBR 附图，也支持已打包/生成图像，全程不启动 Cycles。存在多张图像或 Mapping/Generated 坐标时无法无歧义地对应 Halo 的单一 `texture`，请使用烘焙。
+   - “Cycles 烘焙”可重新生成 Smart UV，将多个材质烘焙到一张 16～8192 像素 PNG，并可配置 UV 边缘扩张和基础色/发光/综合模式。原材质始终使用原活动/渲染 UV 采样，独立的 `Halo Bake UV` 只负责接收烘焙并写入最终 OBJ，避免原贴图被新 UV 重新切碎。Blender 5.2 的 `bpy.ops.object.bake` 由 Cycles 提供，没有等价的 EEVEE 材质烘焙接口；复杂透明节点可能无法完全提取，插件会按不透明处理并给出提醒。生成纹理会打包进 `.blend`，导出资源包时才落盘。
    - Mesh 的“简易 Shader”可编辑 `double_sided` 和唯一效果 `alpha_mask`。遮罩读取 PNG 红色通道，`linear` 直接乘 Alpha，`step` 按阈值开关；U/V 循环偏移支持逐项新增、修改、排序、删除，并随时间轴预览。主纹理与遮罩的像素尺寸及长宽比相互独立，插件不会要求缩放倍数一致，也不会重采样图片。
    - `face_camera` 会持续采用最近一次 3D 视图朝向；播放时间轴且父组同时执行位移/旋转动画时仍会在每帧动画求值后重新面向视图。关闭该属性时会从面板字段重新构建图元并恢复单位局部变换，清除预览摄像机旋转。
 3. 要把一个组设为另一个组的子组：在“大纲视图”或 3D 视图中选择要移动的组，在 3D 视图右侧栏的“Halo 光环”标签中展开“树形编辑”，点击“选择新父级…”，在列表中选择目标组并确认。该面板现在始终可见：选中图元时可先点“选择所属部件组”，选中光环根时会提示继续选择其下的组。选择“光环根（顶层）”可移回顶层；当前组及其所有子组会自动从候选项中排除以避免循环。“保持世界位置”开启时会重新计算局部 JSON 变换来保持当前外观，关闭时精确保留原局部 JSON 值。移动对话框可分别勾选是否携带位置、旋转、缩放、常驻动画、发光/继承和扩展/未知字段，默认全部勾选；取消勾选的字段会重置为 schema 默认值。
@@ -124,7 +131,7 @@ JSON 会统一输出为 UTF-8、两空格缩进；不保证原始空白逐字节
 ```powershell
 python -m unittest discover -s tests -p 'test_*.py' -v
 blender --command extension validate halo_pack_editor
-blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.4.0.zip
+blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.5.0.zip
 ```
 
 Blender 后台集成测试脚本位于 `scripts/`。测试与下载缓存应放在 `F:\codex-cache\halo-blender-addon`，扩展自身不会依赖该路径。
