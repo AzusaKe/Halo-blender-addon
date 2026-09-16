@@ -1,9 +1,16 @@
-# Halo Pack Editor 0.5.0 测试报告
+# Halo Pack Editor 0.5.1 测试报告
 
-测试日期：2026-09-14
+测试日期：2026-09-16
 宿主：Blender 5.2.0 LTS（`fbe6228777e7`）  
-交付包：`dist/halo_pack_editor-0.5.0.zip`
-SHA-256：`01A31AFCA59A49DCA875657D5BDE73B40B5AEF97FC3F1471A15D6DF9E9C1603B`
+交付包：`dist/halo_pack_editor-0.5.1.zip`
+SHA-256：`C0D581860BBE3A15F6943864FE1FB6E78C3F7186FBC73B64FE2FA4E4652DABA2`
+
+## 0.5.1 资源包兼容元数据维护
+
+- 跟进 Minecraft Java 26.3 的资源包版本 97.1，将新建、缺省导出与 HaloPackTool 生成的兼容上界从 26.2 格式 88 扩展为实用开放上界 `2147483647`；旧版 `pack_format = 15`、跨版本 `supported_formats` 以及新版 `min_format` / `max_format` 同时保留。
+- 插件在导出旧 `.blend` 时会迁移自身曾生成的精确默认值 `supported_formats.max_inclusive = 88` 与 `max_format = [88,0]`，但保留用户设置的其他自定义兼容范围。52 项插件纯 Python 测试、14 项 HaloPackTool 测试、Blender Extension 源码校验、场景导出和多来源合并测试均通过并断言开放上界。
+- Java 解析器交叉检查不再假设 Gradle 缓存位于 C 盘用户目录：优先读取 `GRADLE_USER_HOME`，未设置时才使用当前用户的 `.gradle`，以适配缓存迁移后的发布环境。
+- 完整 `scripts/build.ps1` 通过，包括 `JAVA_PARSER_OK 5`、动画与资源持久化、保存重开以及 EEVEE/Cycles 渲染；最终 ZIP 在隔离配置 `F:\codex-cache\halo-blender-addon\isolated-0.5.1-5dff7380eb96490d83ccf25cf6fd4424` 通过 `extension install-file` 安装和 `INSTALLED_PACKAGE_OK` 回归，未改动用户当前安装。
 
 ## 0.5.0 项目 Mesh 转原生 OBJ 专项验收
 
@@ -131,7 +138,7 @@ SHA-256：`01A31AFCA59A49DCA875657D5BDE73B40B5AEF97FC3F1471A15D6DF9E9C1603B`
 - 0.2.9 动画期间 `face_camera`：为 Billboard 父组注入每秒 45 度的常驻旋转，在两个相隔帧确认父组世界旋转确实变化；同时缓存一个固定 3D 视图四元数，并在每帧动画求值后断言 Billboard 世界朝向始终与该视图一致。
 - 0.3.0 多来源合并：后台构造一个文件夹包和一个 ZIP 包，二者包含相同 `demo:halo` ID、相同纹理资源 ID 但不同 PNG，以及各自未知文件。文件夹导入后断言编辑根位于 Blender 用户数据缓存且源目录字节不变；连续导入后定义自动成为 `demo:halo`/`demo:halo_2`、两图元使用各自来源图片；清空 ZIP 缓存路径后确认能从原 ZIP 重新安全解包并重绑材质；再次新建重名光环得到 `_3` 并绑定独立“本地编辑资源”。合并导出后核心解析取得三个定义、两个来源未知文件及本地缓存文件；清除 `_3` 后导出确认定义不会复活，清除文件夹来源后只剩 ZIP 来源的 `_2` 定义与资源。另验证嵌套 definition 路径在导出清理范围内。
 - 0.3.0 可见性与场景隔离：关闭第一个定义的预览可见性后，断言其 Root/Group/Primitive 全部同时设置视图与渲染隐藏，第二个定义及另一个 Blender Scene 中同 ID 对象不受影响；清除来源后第二场景对象仍存在。重新开启后完整恢复，导出的三个定义均不含 `visible` 字段。
-- 0.3.1 资源包兼容范围：纯 Python、Blender 场景导出和多来源合并导出均断言 `pack_format = 15`、`supported_formats = 15～88`、`min_format = [15,0]`、`max_format = [88,0]`，同时保留自定义描述和未知元数据。
+- 0.3.1 资源包兼容范围（后于 2026-09-16 更新）：纯 Python、Blender 场景导出和多来源合并导出均断言 `pack_format = 15`、`supported_formats = 15～2147483647`、`min_format = [15,0]`、`max_format = 2147483647`，同时保留自定义描述和未知元数据。
 
 ## 人工验收边界
 

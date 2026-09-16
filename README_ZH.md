@@ -9,7 +9,7 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 - 最新稳定版：[`v0.4.0`](https://github.com/AzusaKe/Halo-blender-addon/releases/tag/v0.4.0)，也可前往 [GitHub Releases](https://github.com/AzusaKe/Halo-blender-addon/releases/latest) 获取可安装 ZIP。
 - 宿主版本：Blender 5.2 LTS 或更新版本。
 - 资源格式：完整支持 Halo 1.x 的 Billboard/Ring，并支持 Halo 2.x schema 1.1.0 原生 OBJ Mesh、简易 Shader 与保持比例缩放。
-- Minecraft 资源包元数据默认覆盖 Java 1.20～26.2；实际游戏加载仍需安装相应版本的 Halo 模组。
+- Minecraft 资源包元数据默认覆盖 Java 1.20～26.3 及后续格式，采用实用开放上界 `2147483647`；实际游戏加载仍需安装相应版本的 Halo 模组，Mojang 若再次修改元数据规则则需要跟进调整。
 
 ### v0.4.0 更新摘要
 
@@ -110,7 +110,7 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 9. 在“验证与导出”中先运行验证，再导出 ZIP 或文件夹。输出会合并来源列表中所有仍保留的资源和当前光环列表；已清除的定义不会从来源包中重新出现。多个来源若含相同非定义资源路径，后导入来源覆盖先导入来源。
 
 导入不会修改原资源包。导出默认拒绝覆盖已存在目标；需要覆盖时必须显式启用。
-导出的 `pack.mcmeta` 默认声明 Minecraft Java 1.20～26.2 兼容：`pack_format: 15` 供 1.20/1.20.1 读取，另写入 `supported_formats: 15～88` 以及新版 `min_format: [15,0]`、`max_format: [88,0]`。缺少描述时自动补为 `Halo Pack Editor export`，已有自定义描述和未知元数据保持不变；这些元数据仍可在项目面板中手动编辑。
+导出的 `pack.mcmeta` 默认声明 Minecraft Java 1.20～26.3 及后续格式兼容：`pack_format: 15` 供 1.20/1.20.1 读取，另写入 `supported_formats: 15～2147483647` 以及新版 `min_format: [15,0]`、`max_format: 2147483647`。Minecraft 当前没有专门的开放上界标记，因此这里使用 Java 正整数上限；Mojang 若改变元数据规则再随之调整。缺少描述时自动补为 `Halo Pack Editor export`，已有自定义描述、未知元数据和非旧默认值的自定义兼容范围保持不变；旧插件默认的 `88` / `[88,0]` 会在导出时自动迁移。
 
 ## 坐标约定
 
@@ -131,7 +131,7 @@ JSON 会统一输出为 UTF-8、两空格缩进；不保证原始空白逐字节
 ```powershell
 python -m unittest discover -s tests -p 'test_*.py' -v
 blender --command extension validate halo_pack_editor
-blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.5.0.zip
+blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.5.1.zip
 ```
 
 Blender 后台集成测试脚本位于 `scripts/`。测试与下载缓存应放在 `F:\codex-cache\halo-blender-addon`，扩展自身不会依赖该路径。

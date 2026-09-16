@@ -246,9 +246,12 @@ with zipfile.ZipFile(conversion_zip, "r") as archive:
     assert f"assets/{namespace}/{relative_texture}" in archive.namelist()
     repaired_manifest = json.loads(archive.read("pack.mcmeta"))
     assert repaired_manifest["pack"]["pack_format"] == 15
-    assert repaired_manifest["pack"]["supported_formats"] == {"min_inclusive": 15, "max_inclusive": 88}
+    assert repaired_manifest["pack"]["supported_formats"] == {
+        "min_inclusive": 15,
+        "max_inclusive": 2_147_483_647,
+    }
     assert repaired_manifest["pack"]["min_format"] == [15, 0]
-    assert repaired_manifest["pack"]["max_format"] == [88, 0]
+    assert repaired_manifest["pack"]["max_format"] == 2_147_483_647
     assert repaired_manifest["pack"]["description"] == "Halo Pack Editor export"
     assert repaired_manifest["unknown_meta_test"] == {"keep": True}
 scene.halo_project.manifest_json = manifest_before_missing_description_test

@@ -44,9 +44,11 @@ from .models import (
 
 
 DEFAULT_PACK_DESCRIPTION = "Halo Pack Editor export"
-DEFAULT_SUPPORTED_FORMATS = {"min_inclusive": 15, "max_inclusive": 88}
+DEFAULT_MAX_FORMAT = 2_147_483_647
+DEFAULT_SUPPORTED_FORMATS = {"min_inclusive": 15, "max_inclusive": DEFAULT_MAX_FORMAT}
 DEFAULT_MIN_FORMAT = [15, 0]
-DEFAULT_MAX_FORMAT = [88, 0]
+LEGACY_DEFAULT_MAX_FORMAT = [88, 0]
+LEGACY_DEFAULT_SUPPORTED_FORMATS = {"min_inclusive": 15, "max_inclusive": 88}
 
 
 def _complete_pack_meta(value: Mapping[str, Any] | None, *, pack_format: int = 15) -> dict[str, Any]:
@@ -57,6 +59,10 @@ def _complete_pack_meta(value: Mapping[str, Any] | None, *, pack_format: int = 1
     pack.setdefault("supported_formats", clone_json(DEFAULT_SUPPORTED_FORMATS))
     pack.setdefault("min_format", clone_json(DEFAULT_MIN_FORMAT))
     pack.setdefault("max_format", clone_json(DEFAULT_MAX_FORMAT))
+    if pack.get("supported_formats") == LEGACY_DEFAULT_SUPPORTED_FORMATS:
+        pack["supported_formats"] = clone_json(DEFAULT_SUPPORTED_FORMATS)
+    if pack.get("max_format") == LEGACY_DEFAULT_MAX_FORMAT:
+        pack["max_format"] = DEFAULT_MAX_FORMAT
     description = pack.get("description")
     if description is None or (isinstance(description, str) and not description.strip()):
         pack["description"] = DEFAULT_PACK_DESCRIPTION

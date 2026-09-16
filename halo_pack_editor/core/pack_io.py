@@ -45,8 +45,15 @@ except ImportError:  # Direct script/test import.
 
 PACK_FORMAT = 15
 MIN_PACK_FORMAT = [15, 0]
-MAX_PACK_FORMAT = [88, 0]
-SUPPORTED_PACK_FORMATS = {"min_inclusive": 15, "max_inclusive": 88}
+# Minecraft has no wildcard token for pack ranges.  A scalar max_format is a
+# major version whose every minor version is accepted, so Java's largest
+# positive integer is the practical open-ended upper bound.  This includes
+# the current 26.3 resource-pack format 97.1 and future formats until Mojang
+# changes the metadata contract itself.
+MAX_PACK_FORMAT = 2_147_483_647
+SUPPORTED_PACK_FORMATS = {"min_inclusive": 15, "max_inclusive": MAX_PACK_FORMAT}
+LEGACY_DEFAULT_MAX_PACK_FORMAT = [88, 0]
+LEGACY_DEFAULT_SUPPORTED_PACK_FORMATS = {"min_inclusive": 15, "max_inclusive": 88}
 DEFAULT_PACK_DESCRIPTION = "Halo Pack Editor export"
 SCHEMA_VERSION = "1.1.0"
 PBR_SUFFIXES = ("_n", "_s", "_e")
@@ -73,6 +80,10 @@ def _complete_pack_mcmeta(value: Mapping[str, Any] | None) -> dict[str, Any]:
     pack.setdefault("supported_formats", clone_ast(SUPPORTED_PACK_FORMATS))
     pack.setdefault("min_format", clone_ast(MIN_PACK_FORMAT))
     pack.setdefault("max_format", clone_ast(MAX_PACK_FORMAT))
+    if pack.get("supported_formats") == LEGACY_DEFAULT_SUPPORTED_PACK_FORMATS:
+        pack["supported_formats"] = clone_ast(SUPPORTED_PACK_FORMATS)
+    if pack.get("max_format") == LEGACY_DEFAULT_MAX_PACK_FORMAT:
+        pack["max_format"] = MAX_PACK_FORMAT
     description = pack.get("description")
     if description is None or (isinstance(description, str) and not description.strip()):
         pack["description"] = DEFAULT_PACK_DESCRIPTION

@@ -203,10 +203,10 @@ class PackIOTests(unittest.TestCase):
             self.assertEqual(repaired_meta["pack"]["pack_format"], 15)
             self.assertEqual(repaired_meta["pack"]["supported_formats"], {
                 "min_inclusive": 15,
-                "max_inclusive": 88,
+                "max_inclusive": 2_147_483_647,
             })
             self.assertEqual(repaired_meta["pack"]["min_format"], [15, 0])
-            self.assertEqual(repaired_meta["pack"]["max_format"], [88, 0])
+            self.assertEqual(repaired_meta["pack"]["max_format"], 2_147_483_647)
             self.assertEqual(repaired_meta["pack"]["description"], DEFAULT_PACK_DESCRIPTION)
             self.assertEqual(repaired_meta["unknown_meta"], {"keep": True})
 
@@ -216,6 +216,33 @@ class PackIOTests(unittest.TestCase):
             with zipfile.ZipFile(custom) as archive:
                 custom_meta = json.loads(archive.read("pack.mcmeta"))
             self.assertEqual(custom_meta["pack"]["description"], "自定义描述")
+
+    def test_export_migrates_only_the_previous_generated_compatibility_range(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "pack"
+            self.make_folder(root)
+            project = import_pack(root)
+            project.pack_mcmeta["pack"].update({
+                "supported_formats": {"min_inclusive": 15, "max_inclusive": 88},
+                "min_format": [15, 0],
+                "max_format": [88, 0],
+            })
+            migrated = Path(tmp) / "migrated"
+            export_folder(project, migrated)
+            migrated_meta = json.loads((migrated / "pack.mcmeta").read_text(encoding="utf-8"))
+            self.assertEqual(migrated_meta["pack"]["supported_formats"]["max_inclusive"], 2_147_483_647)
+            self.assertEqual(migrated_meta["pack"]["max_format"], 2_147_483_647)
+
+            project.pack_mcmeta["pack"]["supported_formats"] = {
+                "min_inclusive": 15,
+                "max_inclusive": 97,
+            }
+            project.pack_mcmeta["pack"]["max_format"] = [97, 1]
+            custom = Path(tmp) / "custom-range"
+            export_folder(project, custom)
+            custom_meta = json.loads((custom / "pack.mcmeta").read_text(encoding="utf-8"))
+            self.assertEqual(custom_meta["pack"]["supported_formats"]["max_inclusive"], 97)
+            self.assertEqual(custom_meta["pack"]["max_format"], [97, 1])
 
     def test_export_does_not_overwrite_source_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

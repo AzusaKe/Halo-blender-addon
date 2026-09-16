@@ -5,8 +5,13 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$gradleModules = 'C:\Users\Azusa_Ke\.gradle\caches\modules-2\files-2.1'
-$loomMinecraft = 'C:\Users\Azusa_Ke\.gradle\caches\fabric-loom\minecraftMaven\net\minecraft\minecraft-merged'
+$gradleHome = if ($env:GRADLE_USER_HOME) {
+    [System.IO.Path]::GetFullPath($env:GRADLE_USER_HOME)
+} else {
+    Join-Path $env:USERPROFILE '.gradle'
+}
+$gradleModules = Join-Path $gradleHome 'caches\modules-2\files-2.1'
+$loomMinecraft = Join-Path $gradleHome 'caches\fabric-loom\minecraftMaven\net\minecraft\minecraft-merged'
 $source = Join-Path (Split-Path -Parent $PSScriptRoot) 'tests\java\JavaPackParseCheck.java'
 New-Item -ItemType Directory -Force -Path $Cache | Out-Null
 

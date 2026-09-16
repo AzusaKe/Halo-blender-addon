@@ -48,12 +48,15 @@ GROUP_ROLE = "group"
 PRIMITIVE_ROLE = "primitive"
 HEAD_ROLE = "head_preview"
 DEFAULT_PACK_DESCRIPTION = "Halo Pack Editor export"
+OPEN_ENDED_MAX_PACK_FORMAT = 2_147_483_647
+LEGACY_DEFAULT_SUPPORTED_FORMATS = {"min_inclusive": 15, "max_inclusive": 88}
+LEGACY_DEFAULT_MAX_FORMAT = [88, 0]
 DEFAULT_MANIFEST = {
     "pack": {
         "pack_format": 15,
-        "supported_formats": {"min_inclusive": 15, "max_inclusive": 88},
+        "supported_formats": {"min_inclusive": 15, "max_inclusive": OPEN_ENDED_MAX_PACK_FORMAT},
         "min_format": [15, 0],
-        "max_format": [88, 0],
+        "max_format": OPEN_ENDED_MAX_PACK_FORMAT,
         "description": DEFAULT_PACK_DESCRIPTION,
     }
 }
@@ -77,9 +80,16 @@ def _complete_manifest(value: Any) -> dict[str, Any]:
     source_pack = manifest.get("pack")
     pack = _json_copy(dict(source_pack)) if isinstance(source_pack, Mapping) else {}
     pack.setdefault("pack_format", 15)
-    pack.setdefault("supported_formats", {"min_inclusive": 15, "max_inclusive": 88})
+    pack.setdefault("supported_formats", {
+        "min_inclusive": 15,
+        "max_inclusive": OPEN_ENDED_MAX_PACK_FORMAT,
+    })
     pack.setdefault("min_format", [15, 0])
-    pack.setdefault("max_format", [88, 0])
+    pack.setdefault("max_format", OPEN_ENDED_MAX_PACK_FORMAT)
+    if pack.get("supported_formats") == LEGACY_DEFAULT_SUPPORTED_FORMATS:
+        pack["supported_formats"] = _json_copy(DEFAULT_MANIFEST["pack"]["supported_formats"])
+    if pack.get("max_format") == LEGACY_DEFAULT_MAX_FORMAT:
+        pack["max_format"] = OPEN_ENDED_MAX_PACK_FORMAT
     description = pack.get("description")
     if description is None or (isinstance(description, str) and not description.strip()):
         pack["description"] = DEFAULT_PACK_DESCRIPTION

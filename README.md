@@ -9,7 +9,7 @@ Halo Pack Editor is a Blender 5.2 LTS extension for importing, previewing, editi
 - Latest stable release: [`v0.4.0`](https://github.com/AzusaKe/Halo-blender-addon/releases/tag/v0.4.0), available from [GitHub Releases](https://github.com/AzusaKe/Halo-blender-addon/releases/latest).
 - Host: Blender 5.2 LTS or newer.
 - Halo formats: full Billboard/Ring support for Halo 1.x and native OBJ Mesh support for Halo 2.x schema 1.1.0.
-- Generated resource-pack metadata targets Minecraft Java 1.20 through 26.2 by default. A compatible Halo mod build is still required in game.
+- Generated resource-pack metadata targets Minecraft Java 1.20 through 26.3 and future formats by default, using the practical open upper bound `2147483647`. A compatible Halo mod build is still required in game; the bound should be revisited if Mojang changes the metadata contract.
 
 ## Features
 
@@ -113,7 +113,7 @@ The typed editor targets Halo 2.x schema `1.1.0` and remains compatible with Hal
 ```powershell
 python -m unittest discover -s tests -p 'test_*.py' -v
 blender --command extension validate halo_pack_editor
-blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.5.0.zip
+blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.5.1.zip
 ```
 
 Background Blender integration tests are under `scripts/`. Development and render caches belong under `F:\codex-cache\halo-blender-addon`; the installed extension does not depend on that path.
