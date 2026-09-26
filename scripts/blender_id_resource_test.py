@@ -54,6 +54,71 @@ try:
     imported = list((pack_root / "assets/trinity/textures/halo").glob("serina_detail*.png"))
     assert [path.name for path in imported] == ["serina_detail.png"], imported
 
+    # A sidecar belongs to the albedo resource, not only to the primitive that
+    # happened to import it.  Create a second group using the same albedo.
+    definition_root = primitive.parent.parent
+    operators._select_object(bpy.context, definition_root)
+    assert bpy.ops.halo.add_group(group_id="shared_albedo_group") == {"FINISHED"}
+    shared_group = bpy.context.object
+    assert bpy.ops.halo.add_primitive(texture=first_id) == {"FINISHED"}
+    shared_primitive = bpy.context.object
+    assert primitive.parent.halo_node.glowing is True
+    assert shared_group.halo_node.glowing is True
+    operators._select_object(bpy.context, primitive)
+
+    # labPBR maps derive their identity from the selected albedo, drive the
+    # integrated node preview, and disable the owning group's full-bright flag.
+    normal_path = scratch / "picked_normal.png"
+    specular_path = scratch / "picked_specular.png"
+    for image_path, color in (
+        (normal_path, [0.5, 0.5, 1.0, 1.0]),
+        (specular_path, [0.5, 0.04, 0.0, 1.0]),
+    ):
+        test_image = bpy.data.images.new(image_path.stem, width=2, height=2, alpha=True)
+        test_image.pixels[:] = color * 4
+        test_image.filepath_raw = str(image_path)
+        test_image.file_format = "PNG"
+        test_image.save()
+        bpy.data.images.remove(test_image)
+    primitive.parent.halo_node.glowing = True
+    assert bpy.ops.halo.import_texture(filepath=str(normal_path), target="NORMAL") == {"FINISHED"}
+    assert bpy.ops.halo.import_texture(filepath=str(specular_path), target="SPECULAR") == {"FINISHED"}
+    assert primitive.parent.halo_node.glowing is False
+    assert shared_group.halo_node.glowing is False
+    assert shared_primitive.data.materials[0].node_tree.nodes.get("Halo labPBR Surface") is not None
+    normal_resource = pack_root / "assets/trinity/textures/halo/serina_detail_n.png"
+    specular_resource = pack_root / "assets/trinity/textures/halo/serina_detail_s.png"
+    assert normal_resource.is_file(), normal_resource
+    assert specular_resource.is_file(), specular_resource
+    material = primitive.data.materials[0]
+    surface_node = material.node_tree.nodes.get("Halo labPBR Surface")
+    assert surface_node is not None
+    assert surface_node.node_tree.get("labpbr_kind") == "Surface"
+    assert surface_node.node_tree.get("labpbr_complete") is True
+    assert surface_node.outputs["Shader"].is_linked
+    assert surface_node.inputs["Albedo Color"].is_linked
+    assert surface_node.inputs["Albedo Alpha"].is_linked
+    assert surface_node.inputs["Normal Color"].is_linked
+    assert surface_node.inputs["Specular Color"].is_linked
+    normal_node = material.node_tree.nodes.get("Halo Normal Texture")
+    specular_node = material.node_tree.nodes.get("Halo Specular Texture")
+    assert normal_node is not None and normal_node.image.colorspace_settings.name == "Non-Color"
+    assert specular_node is not None and specular_node.image.colorspace_settings.name == "Non-Color"
+    assert specular_node.interpolation == "Closest"
+
+    replacement_path = scratch / "serina_replacement.png"
+    replacement_image = bpy.data.images.new("Replacement Albedo", width=2, height=2, alpha=True)
+    replacement_image.pixels[:] = [0.0, 1.0, 0.0, 1.0] * 4
+    replacement_image.filepath_raw = str(replacement_path)
+    replacement_image.file_format = "PNG"
+    replacement_image.save()
+    bpy.data.images.remove(replacement_image)
+    assert bpy.ops.halo.import_texture(filepath=str(replacement_path), target="OUTER") == {"FINISHED"}
+    assert primitive.halo_node.texture == "trinity:textures/halo/serina_replacement.png"
+    assert (pack_root / "assets/trinity/textures/halo/serina_replacement_n.png").is_file()
+    assert (pack_root / "assets/trinity/textures/halo/serina_replacement_s.png").is_file()
+    assert primitive.data.materials[0].node_tree.nodes.get("Halo labPBR Surface") is not None
+
     # An old source filename must never leak into a new export.
     item.source_path = "assets/minecraft/halo_definitions/halo.json"
     export_root = scratch / "export"
@@ -61,7 +126,22 @@ try:
     expected = export_root / "assets/trinity/halo_definitions/serina.json"
     assert expected.is_file(), expected
     assert not (export_root / "assets/trinity/halo_definitions/halo.json").exists()
-    assert json.loads(expected.read_text(encoding="utf-8"))["id"] == "trinity:serina"
+    exported_document = json.loads(expected.read_text(encoding="utf-8"))
+    assert exported_document["id"] == "trinity:serina"
+
+    def mappings(value):
+        if isinstance(value, dict):
+            yield value
+            for child in value.values():
+                yield from mappings(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from mappings(child)
+
+    pbr_group = next((value for value in mappings(exported_document)
+                      if value.get("glowing") is False
+                      and "trinity:textures/halo/serina_replacement.png" in str(value)), None)
+    assert pbr_group is not None, exported_document
 
     # Two different IDs may still normalize to one portable filename.
     assert bpy.ops.halo.new_definition(definition_id="trinity:path/serina") == {"FINISHED"}

@@ -64,6 +64,50 @@ def _definition_primitive_count(scene, definition_id):
     )
 
 
+def _draw_labpbr_controls(layout, context, obj, node):
+    """Draw base-first labPBR sidecar import controls for one primitive."""
+
+    from . import blender_scene
+    from .materials import labpbr_texture_id, resolve_texture_path
+
+    box = layout.box()
+    box.label(text="labPBR 1.3", icon="MATERIAL")
+    base_texture_id = str(getattr(node, "texture", "") or "").strip()
+    pack_root = blender_scene.definition_pack_root(
+        context.scene, str(obj.get("halo_definition_id", ""))
+    )
+    generated_available = bool(base_texture_id and bpy is not None and any(
+        image.get("halo_texture_id") == base_texture_id
+        and image.get("halo_generated_texture")
+        and not image.get("halo_missing_texture")
+        for image in bpy.data.images
+    ))
+    base_available = bool(
+        base_texture_id and (resolve_texture_path(base_texture_id, pack_root) or generated_available)
+    )
+    if not base_available:
+        box.label(text="请先导入有效的固有色贴图", icon="ERROR")
+    for kind, label, target in (
+        ("NORMAL", "法线贴图", "NORMAL"),
+        ("SPECULAR", "高光贴图", "SPECULAR"),
+    ):
+        row = box.row(align=True)
+        sidecar_id = labpbr_texture_id(base_texture_id, kind) if base_texture_id else ""
+        available = bool(sidecar_id and resolve_texture_path(sidecar_id, pack_root))
+        row.label(text=f"{label}：{'已导入' if available else '未导入'}", icon="CHECKMARK" if available else "IMAGE_DATA")
+        action = row.row(align=True)
+        action.enabled = base_available
+        operator = action.operator(
+            "halo.import_texture",
+            text="替换" if available else "导入",
+            icon="FILE_REFRESH" if available else "IMPORT",
+        )
+        operator.target = target
+        if available:
+            box.label(text=sidecar_id)
+    box.label(text="导入后会关闭同一资源中所有使用组的自发光", icon="INFO")
+
+
 def _mesh_mask_terms_for_panel(obj, axis):
     try:
         raw = json.loads(obj.get("halo_primitive_raw_json", obj.get("halo_raw_json", "{}")))
@@ -406,6 +450,7 @@ if bpy is not None:
                     texture_import.target = "OUTER"
                     box.prop(node, "size", text="尺寸")
                     box.prop(node, "face_camera", text="面向相机")
+                _draw_labpbr_controls(box, context, obj, node)
                 box.operator("halo.refresh_geometry", text="强制刷新", icon="FILE_REFRESH")
             try:
                 from .operators import _selected_sibling_nodes

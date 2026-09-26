@@ -17,7 +17,7 @@
 - 图元计数：0.2.7 起，“光环属性”按当前定义 ID 实时统计场景中全部受管理的 Billboard、Ring 与 Mesh；计数只用于编辑信息显示，不写入 JSON。
 - 动画函数：`sin`、`cos`、`linear`。
 - 过渡缓动：`linear`、`ease_out_cubic`、`ease_in_out_cubic`。
-- labPBR：保留或复制 `_n`、`_s`、`_e` 邻接贴图，但 Halo 的当前渲染器不会读取它们。
+- labPBR：Halo 已读取固有色同目录、同基本名的 `_n` 与 `_s` 旁车。插件要求先有有效固有色，再把用户选择的法线/高光 PNG 固定写成 `<固有色>_n.png` / `<固有色>_s.png`；导入任一旁车会按来源缓存与实际解析文件查找全部共享该固有色的图元，关闭各自所属组 `glowing` 并重建组内图元，另一个来源中同名 ID 不受影响。更换固有色时复制现有 `_n/_s` 到新名称，保留仍可能共享的旧文件并由导出可达性清理最终筛除。预览集成 labPBR 1.3 解码节点；`_e` 仍按现有资源家族规则保留/复制，但当前编辑面板不单独提供 `_e` 导入（自发光来自 `_s` Alpha）。
 - 阻尼：图形化编辑 `linearFactor`、`angularFactor`、`maxLinearDistance`、`maxAngularDegrees`、`angularMomentumFactor`、`maxAngularMomentumDegrees` 和顶层 `allow_angular_momentum`；factor 越接近 1 越快贴近目标，越接近 0 跟随越慢。未知子字段与合法零值保留。Blender 暂不模拟阻尼轨迹。
 - 树形结构：组可移动到同一定义的光环根或另一个组下；候选列表自动排除自身和全部子组。可选择保持世界外观并重算局部 JSON 变换，或保留原局部值。
 - 复制与图元迁移：组复制会递归复制完整子树，图元复制只复制自身，副本位于原父级且使用全新 UUID 与唯一组 ID；相关 startup/shutdown `id_overrides` 会映射到新 ID。组移动可选择携带位置、旋转、缩放、常驻动画、发光/继承及扩展字段；图元迁移创建新属性副本组时提供相同选项，并额外控制 startup/shutdown `id_overrides`。选项默认全开，未携带字段使用 schema 默认值。

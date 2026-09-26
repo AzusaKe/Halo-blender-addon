@@ -4,7 +4,12 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from halo_pack_editor.materials import copy_texture_with_sidecars
+from halo_pack_editor.materials import (
+    carry_labpbr_sidecars,
+    copy_texture_with_sidecars,
+    import_labpbr_texture,
+    labpbr_texture_id,
+)
 
 
 class TextureImportTests(unittest.TestCase):
@@ -93,6 +98,59 @@ class TextureImportTests(unittest.TestCase):
         self.source = self.root / "not-present.png"
         with self.assertRaises(FileNotFoundError):
             self.copy()
+
+    def test_labpbr_maps_use_the_albedo_name_and_replace_in_place(self):
+        albedo = Path(self.copy()[0])
+        normal = self.root / "chosen-normal.png"
+        normal.write_bytes(b"normal-one")
+        Path(str(normal) + ".mcmeta").write_bytes(b'{"animation":{"frametime":2}}')
+        normal_id = import_labpbr_texture(normal, self.pack, self.texture_id, "NORMAL")
+        self.assertEqual(normal_id, "demo:textures/halo/source_n.png")
+        self.assertEqual(albedo.with_name("source_n.png").read_bytes(), b"normal-one")
+        self.assertTrue(Path(str(albedo.with_name("source_n.png")) + ".mcmeta").is_file())
+
+        normal.write_bytes(b"normal-two")
+        Path(str(normal) + ".mcmeta").unlink()
+        self.assertEqual(import_labpbr_texture(normal, self.pack, self.texture_id, "NORMAL"), normal_id)
+        self.assertEqual(albedo.with_name("source_n.png").read_bytes(), b"normal-two")
+        self.assertFalse(Path(str(albedo.with_name("source_n.png")) + ".mcmeta").exists())
+
+        specular = self.root / "unrelated-name.png"
+        specular.write_bytes(b"specular")
+        specular_id = import_labpbr_texture(specular, self.pack, self.texture_id, "SPECULAR")
+        self.assertEqual(specular_id, "demo:textures/halo/source_s.png")
+        self.assertEqual(albedo.with_name("source_s.png").read_bytes(), b"specular")
+        reused = self.copy(preserve_existing_sidecars=True)
+        self.assertEqual(Path(reused[0]), albedo)
+        self.assertFalse(albedo.with_name("source_1.png").exists())
+
+    def test_labpbr_requires_existing_albedo_and_follows_replacement(self):
+        normal = self.root / "normal.png"
+        normal.write_bytes(b"normal")
+        with self.assertRaisesRegex(ValueError, "固有色"):
+            import_labpbr_texture(normal, self.pack, self.texture_id, "NORMAL")
+
+        self.copy()
+        import_labpbr_texture(normal, self.pack, self.texture_id, "NORMAL")
+        specular = self.root / "specular.png"
+        specular.write_bytes(b"specular")
+        import_labpbr_texture(specular, self.pack, self.texture_id, "SPECULAR")
+        old_normal = self.pack / "assets/demo/textures/halo/source_n.png"
+        Path(str(old_normal) + ".mcmeta").write_bytes(b"metadata")
+        new_base = self.pack / "assets/demo/textures/halo/replacement.png"
+        new_base.write_bytes(b"replacement")
+        copied = carry_labpbr_sidecars(
+            self.pack,
+            self.texture_id,
+            "demo:textures/halo/replacement.png",
+        )
+        self.assertEqual(labpbr_texture_id("demo:textures/halo/replacement", "NORMAL"),
+                         "demo:textures/halo/replacement_n.png")
+        self.assertTrue(new_base.with_name("replacement_n.png").is_file())
+        self.assertTrue(new_base.with_name("replacement_s.png").is_file())
+        self.assertTrue(Path(str(new_base.with_name("replacement_n.png")) + ".mcmeta").is_file())
+        self.assertTrue(old_normal.is_file(), "old family stays available to other primitives")
+        self.assertGreaterEqual(len(copied), 3)
 
 
 if __name__ == "__main__":

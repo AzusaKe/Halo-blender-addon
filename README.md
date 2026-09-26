@@ -1,4 +1,4 @@
-English | [中文](README_ZH.md)
+English | [中文](README_ZH.md) | [Changelog](CHANGELOG.md)
 
 # Halo Pack Editor
 
@@ -6,7 +6,7 @@ Halo Pack Editor is a Blender 5.2 LTS extension for importing, previewing, editi
 
 ## Download and compatibility
 
-- Latest stable release: [`v0.4.0`](https://github.com/AzusaKe/Halo-blender-addon/releases/tag/v0.4.0), available from [GitHub Releases](https://github.com/AzusaKe/Halo-blender-addon/releases/latest).
+- Latest stable release: [`v0.5.1`](https://github.com/AzusaKe/Halo-blender-addon/releases/tag/v0.5.1), available from [GitHub Releases](https://github.com/AzusaKe/Halo-blender-addon/releases/latest).
 - Host: Blender 5.2 LTS or newer.
 - Halo formats: full Billboard/Ring support for Halo 1.x and native OBJ Mesh support for Halo 2.x schema 1.1.0.
 - Generated resource-pack metadata targets Minecraft Java 1.20 through 26.3 and future formats by default, using the practical open upper bound `2147483647`. A compatible Halo mod build is still required in game; the bound should be revisited if Mojang changes the metadata contract.
@@ -26,6 +26,13 @@ Halo Pack Editor is a Blender 5.2 LTS extension for importing, previewing, editi
 - Duplicate, delete, and move sibling groups or primitives in batches.
 - Convert ordinary Blender Mesh objects into nested Halo groups and Billboard primitives, using Cycles baking or optional direct UV sampling.
 - Preview transparent materials consistently in EEVEE and avoid coincident inner/outer Ring surfaces in Cycles.
+- Import per-primitive labPBR 1.3 normal (`_n`) and specular (`_s`) maps after an albedo is selected, and preview their decoded normal, AO, height, roughness, metal, porosity/SSS, and emission channels with the integrated node graph.
+
+## labPBR material workflow
+
+Select a Billboard, Ring, or native Mesh primitive and assign a valid base/albedo PNG first. The **labPBR 1.3** box then enables normal and specular imports. Any selected files are stored beside the albedo as `<albedo>_n.png` and `<albedo>_s.png`; their original filenames are intentionally ignored because Halo discovers these maps by suffix. Importing either map disables `glowing` on every group that uses the same physical albedo in that editable source, then rebuilds those previews. A separate imported pack with a coincidentally identical resource ID is not changed.
+
+Replacing the albedo carries its `_n`/`_s` maps to the new albedo name. The old files remain in the editable cache when another primitive may still use them, while normal export reachability pruning removes genuinely unused families from the final pack. Re-selecting the same albedo preserves its existing PBR maps without creating a numeric suffix. The maps remain sidecar resources and are not written as new fields in Halo JSON.
 
 ## Halo 2.x native Mesh support
 
@@ -58,7 +65,7 @@ Generated textures are packed into the `.blend` and materialized only when the r
 
 ## Installation
 
-1. Download `halo_pack_editor-0.4.0.zip` from the latest release.
+1. Download `halo_pack_editor-0.5.1.zip` from the latest stable release, or use the `0.5.2` development build when testing labPBR editing.
 2. Open **Edit → Preferences → Extensions** in Blender 5.2 LTS or newer.
 3. Choose **Install from Disk** and select the ZIP.
 4. Enable Halo Pack Editor.
@@ -69,7 +76,7 @@ Generated textures are packed into the `.blend` and materialized only when the r
 1. In the **Project** panel, import a resource-pack ZIP/folder or create a blank pack. Imports are appended to the current project rather than replacing it.
 2. Select a definition root, group, or primitive in the Outliner. The Halo sidebar changes to the corresponding graphical editor.
 3. Use the group transform controls for Minecraft position, YXZ rotation, and uniform scale. Managed Halo objects intentionally lock Blender's native G/R/S fields so unsavable transforms are not introduced accidentally.
-4. Edit primitive textures, dimensions, Ring segments, `face_camera`, or Mesh-specific OBJ/material settings. A native Mesh can load an external OBJ or convert a regular Mesh from the current project. Geometry and materials refresh immediately.
+4. Edit primitive textures, optional labPBR maps, dimensions, Ring segments, `face_camera`, or Mesh-specific OBJ/material settings. A native Mesh can load an external OBJ or convert a regular Mesh from the current project. Geometry and materials refresh immediately.
 5. Use **Tree Editing** to move groups, or migrate primitives into an automatically created child group. Batch operations accept only siblings with the same direct parent.
 6. Edit resident and transition animations graphically, or open the multiline JSON editor for advanced fields. Invalid pending JSON never overwrites the last valid definition.
 7. Select resident, startup, shutdown, or full-sequence preview and play the Blender timeline.
@@ -113,7 +120,7 @@ The typed editor targets Halo 2.x schema `1.1.0` and remains compatible with Hal
 ```powershell
 python -m unittest discover -s tests -p 'test_*.py' -v
 blender --command extension validate halo_pack_editor
-blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.5.1.zip
+blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.5.2.zip
 ```
 
 Background Blender integration tests are under `scripts/`. Development and render caches belong under `F:\codex-cache\halo-blender-addon`; the installed extension does not depend on that path.

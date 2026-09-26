@@ -5,6 +5,13 @@
 交付包：`dist/halo_pack_editor-0.5.1.zip`
 SHA-256：`C0D581860BBE3A15F6943864FE1FB6E78C3F7186FBC73B64FE2FA4E4652DABA2`
 
+## 0.5.2 开发构建：labPBR 图元材质
+
+- 为 Billboard、Ring 与原生 Mesh 图元增加固有色优先的 `_n` / `_s` 导入；专项断言文件固定使用固有色基本名、重复导入原位替换、图片元数据同步、缺少固有色时拒绝、替换固有色时旁车跟随且共享旧文件不提前删除。
+- Blender 5.2 后台专项确认法线/高光使用 Non-Color、Specular 使用 Closest，集成 labPBR 1.3 Surface/Decoder 节点组完整建立且 Albedo/Alpha/Normal/Specular 与输出 Shader 均已连接；导入后所属组 `glowing` 写回为 `false`，替换固有色后材质预览仍保留 PBR 节点。
+- 共享固有色同步专项在同一来源的两个不同组使用同一 PNG，仅从其中一个图元导入 PBR 后，两个组均写回 `glowing:false`，两个预览均立即建立 PBR 节点；匹配使用实际解析路径与来源缓存，避免误改其他导入包中同名资源 ID。
+- 完整 `scripts/build.ps1` 通过：54 项纯 Python、Extension 源码/ZIP validate、Hina、原生 Mesh、Java 解析器、合并项目、动画、命名空间迁移、导出清理、六阶段资源持久化、保存重开及 EEVEE/Cycles 渲染全部通过。生成 `dist/halo_pack_editor-0.5.2.zip`（SHA-256 `7316876A1A9E9C1B97572C996CF8DC8C47D4EB4ED13C41C267631F80305C4275`），并在独立 Blender 用户目录通过 `extension install-file` 与 `INSTALLED_PACKAGE_OK`，未覆盖用户安装。Minecraft 客户端目视验收仍留给人工测试。
+
 ## 0.5.1 资源包兼容元数据维护
 
 - 跟进 Minecraft Java 26.3 的资源包版本 97.1，将新建、缺省导出与 HaloPackTool 生成的兼容上界从 26.2 格式 88 扩展为实用开放上界 `2147483647`；旧版 `pack_format = 15`、跨版本 `supported_formats` 以及新版 `min_format` / `max_format` 同时保留。

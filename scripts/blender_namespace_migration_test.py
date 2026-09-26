@@ -104,7 +104,12 @@ assert blender_scene.sync_definition_from_scene(scene, other.definition_id) == o
 assert json.loads(root["halo_raw_json"])["future"]["note"] == "a:textures/future.png"
 assert all(ref.startswith("d:") for ref in referenced_texture_ids([json.loads(item.raw_json)]))
 images = [node.image for mat in primitive.data.materials for node in mat.node_tree.nodes if node.type == "TEX_IMAGE"]
-assert {image.get("halo_texture_id") for image in images} == {"d:textures/halo/c_1.png", "d:textures/inside.png"}
+assert {image.get("halo_texture_id") for image in images} == {
+    "d:textures/halo/c_1.png",
+    "d:textures/halo/c_1_n.png",
+    "d:textures/halo/c_1_s.png",
+    "d:textures/inside.png",
+}
 assert all(image.packed_file and not image.get("halo_missing_texture") for image in images)
 
 # Repeated renames relocate every texture, while same-namespace ID edits do not.

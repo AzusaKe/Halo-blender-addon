@@ -1,4 +1,4 @@
-[English](README.md) | 中文
+[English](README.md) | 中文 | [更新日志](CHANGELOG.md)
 
 # Halo Pack Editor
 
@@ -6,7 +6,7 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 
 ## 下载与版本
 
-- 最新稳定版：[`v0.4.0`](https://github.com/AzusaKe/Halo-blender-addon/releases/tag/v0.4.0)，也可前往 [GitHub Releases](https://github.com/AzusaKe/Halo-blender-addon/releases/latest) 获取可安装 ZIP。
+- 最新稳定版：[`v0.5.1`](https://github.com/AzusaKe/Halo-blender-addon/releases/tag/v0.5.1)，也可前往 [GitHub Releases](https://github.com/AzusaKe/Halo-blender-addon/releases/latest) 获取可安装 ZIP；测试本次 labPBR 功能时使用 `0.5.2` 开发构建。
 - 宿主版本：Blender 5.2 LTS 或更新版本。
 - 资源格式：完整支持 Halo 1.x 的 Billboard/Ring，并支持 Halo 2.x schema 1.1.0 原生 OBJ Mesh、简易 Shader 与保持比例缩放。
 - Minecraft 资源包元数据默认覆盖 Java 1.20～26.3 及后续格式，采用实用开放上界 `2147483647`；实际游戏加载仍需安装相应版本的 Halo 模组，Mojang 若再次修改元数据规则则需要跟进调整。
@@ -34,12 +34,20 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 - 从空白新建资源包、光环、组和图元，并导入或重链接 PNG 贴图。
 - 在当前父级复制组或图元；也可把图元迁移到目标父级下自动创建的属性副本组中。
 - 把当前 Blender 场景中的普通 Mesh 按面转换为 Halo 子组和 Billboard，并通过 Cycles 烘焙或可选的直接 UV 采样生成透明 PNG。
+- 图元先选择有效固有色后，可分别导入 labPBR 1.3 法线贴图（`_n`）和高光贴图（`_s`），并在 Blender 中预览解码后的法线、高度、AO、粗糙度、金属、多孔性/SSS 与自发光。
+
+## labPBR 材质
+
+- 选择 Billboard、Ring 或原生 Mesh 图元并先导入有效固有色 PNG；“部件 / 图元”面板中的 **labPBR 1.3** 区域随后启用法线与高光导入。
+- 所选文件无论原名为何，都会写成固有色旁边的 `<固有色文件名>_n.png` / `<固有色文件名>_s.png`。它们是 Halo 按后缀发现的旁车资源，不新增 JSON 字段。
+- 导入任一 PBR 贴图会自动查找当前编辑来源中解析到同一固有色文件的全部图元，把它们所属组的 `glowing` 设为 `false` 并刷新预览，避免共享固有色的其他组仍保持全亮。另一个导入包中碰巧同名的资源 ID 不会被修改。预览直接集成 labPBR 1.3 节点解码，不要求额外安装节点插件。
+- 替换固有色时，已有 `_n/_s` 会复制到新固有色名称；若仍有其他图元使用旧固有色，旧材质族不会被提前删除。导出时既有可达性清理会排除真正无引用的旧文件。再次选择同一张固有色会保留现有 PBR，不会误加数字后缀。
 
 ## 安装
 
 1. 使用 Blender 5.2 LTS 或更新版本。
 2. 打开“编辑 → 偏好设置 → 扩展”，选择“从磁盘安装”。
-3. 选择 `halo_pack_editor-0.4.0.zip` 并启用扩展。
+3. 选择稳定版 `halo_pack_editor-0.5.1.zip`，或本次功能的 `halo_pack_editor-0.5.2.zip` 开发构建，并启用扩展。
 4. 在 3D 视图按 `N`，打开“Halo 光环”标签页。
 
 ## 保存工程与修复旧贴图（0.3.2）
@@ -131,7 +139,7 @@ JSON 会统一输出为 UTF-8、两空格缩进；不保证原始空白逐字节
 ```powershell
 python -m unittest discover -s tests -p 'test_*.py' -v
 blender --command extension validate halo_pack_editor
-blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.5.1.zip
+blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.5.2.zip
 ```
 
 Blender 后台集成测试脚本位于 `scripts/`。测试与下载缓存应放在 `F:\codex-cache\halo-blender-addon`，扩展自身不会依赖该路径。

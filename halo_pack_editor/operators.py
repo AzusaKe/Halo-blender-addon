@@ -39,7 +39,12 @@ from .geometry import billboard_mesh, mc_rotation_quaternion, ring_mesh
 from .materials import (
     assign_mesh_material,
     assign_primitive_materials,
+    carry_labpbr_sidecars,
     copy_texture_with_sidecars,
+    import_labpbr_texture,
+    materialize_generated_texture,
+    reload_texture_image,
+    resolve_texture_path,
     refresh_halo_material_settings,
     split_resource_id,
 )
@@ -713,6 +718,55 @@ def _set_node_mesh(obj):
     obj["halo_face_camera"] = bool(node.face_camera)
     obj["halo_raw_json"] = obj.get("halo_primitive_raw_json", obj.get("halo_raw_json", "{}"))
     return True
+
+
+def _synchronize_labpbr_users(scene, base_texture_id, pack_root):
+    """Disable full-bright for every group using one physical albedo file.
+
+    Resource IDs can collide between imported source caches, so matching the
+    resolved file and working-pack root is intentional.  Every primitive in an
+    affected group is rebuilt because ``glowing`` is group-scoped in Halo JSON.
+    """
+
+    base_path = resolve_texture_path(base_texture_id, pack_root)
+    if base_path is None:
+        return 0, 0, 0
+    root_key = os.path.normcase(str(Path(pack_root).resolve()))
+    base_key = os.path.normcase(str(Path(base_path).resolve()))
+    matched_primitives = []
+    groups = {}
+    definition_ids = set()
+    for candidate in scene.objects:
+        if candidate.get("halo_role") != PRIMITIVE_ROLE:
+            continue
+        definition_id = str(candidate.get("halo_definition_id", ""))
+        candidate_root = blender_scene.definition_pack_root(scene, definition_id)
+        if not candidate_root or os.path.normcase(str(Path(candidate_root).resolve())) != root_key:
+            continue
+        candidate_path = resolve_texture_path(candidate.halo_node.texture, candidate_root)
+        if candidate_path is None or os.path.normcase(str(Path(candidate_path).resolve())) != base_key:
+            continue
+        parent = candidate.parent
+        if parent is None or parent.get("halo_role") != GROUP_ROLE:
+            continue
+        matched_primitives.append(candidate)
+        groups[parent.as_pointer()] = parent
+        definition_ids.add(definition_id)
+
+    for group in groups.values():
+        group.halo_node.glowing = False
+
+    refreshed = []
+    group_pointers = set(groups)
+    for candidate in scene.objects:
+        parent = candidate.parent
+        if (candidate.get("halo_role") == PRIMITIVE_ROLE and parent is not None
+                and parent.as_pointer() in group_pointers):
+            _set_node_mesh(candidate)
+            refreshed.append(candidate)
+    for definition_id in definition_ids:
+        sync_definition_from_scene(scene, definition_id)
+    return len(matched_primitives), len(groups), len(refreshed)
 
 
 def _duplicate_node_from_json(context, obj):
@@ -1972,7 +2026,9 @@ if bpy is not None:
             name="材质面",
             items=(("OUTER", "主纹理", "Billboard、Ring 外侧或 Mesh 主纹理"),
                    ("INNER", "内侧", "Ring 内侧纹理"),
-                   ("MASK", "Alpha Mask", "Mesh alpha_mask 遮罩纹理")),
+                   ("MASK", "Alpha Mask", "Mesh alpha_mask 遮罩纹理"),
+                   ("NORMAL", "法线贴图", "labPBR 1.3 法线/高度/AO 贴图 (_n)"),
+                   ("SPECULAR", "高光贴图", "labPBR 1.3 高光/金属/自发光贴图 (_s)")),
             default="OUTER",
             options={"HIDDEN"},
         )
@@ -2001,6 +2057,30 @@ if bpy is not None:
                 if not pack_root or not os.path.isdir(pack_root):
                     self.report({"ERROR"}, "无法建立贴图资源目录，请先修复项目资源")
                     return {"CANCELLED"}
+            if self.target in {"NORMAL", "SPECULAR"}:
+                base_texture_id = str(node.texture or "").strip()
+                if (not base_texture_id or
+                        (resolve_texture_path(base_texture_id, pack_root) is None and
+                         materialize_generated_texture(base_texture_id, pack_root) is None)):
+                    self.report({"ERROR"}, "请先为图元导入有效的固有色贴图")
+                    return {"CANCELLED"}
+                try:
+                    sidecar_id = import_labpbr_texture(
+                        self.filepath, pack_root, base_texture_id, self.target
+                    )
+                    reload_texture_image(sidecar_id, pack_root)
+                except (OSError, ValueError) as exc:
+                    self.report({"ERROR"}, f"无法导入 labPBR 贴图：{exc}")
+                    return {"CANCELLED"}
+                matched_count, group_count, _refreshed_count = _synchronize_labpbr_users(
+                    context.scene, base_texture_id, pack_root
+                )
+                label = "法线" if self.target == "NORMAL" else "高光"
+                self.report(
+                    {"INFO"},
+                    f"已导入{label}贴图 {sidecar_id}；同步 {matched_count} 个图元、关闭 {group_count} 个组的自发光",
+                )
+                return {"FINISHED"}
             old_id = (node.inner_texture if self.target == "INNER" else
                       node.mesh_mask_texture if self.target == "MASK" else node.texture)
             old_id = old_id or node.texture or "minecraft:textures/halo/imported.png"
@@ -2024,7 +2104,13 @@ if bpy is not None:
                     if candidate.is_relative_to(assets_root.resolve()):
                         reuse_candidates.append(str(candidate))
             try:
-                copied = copy_texture_with_sidecars(self.filepath, pack_root, texture_id, reuse_candidates=reuse_candidates)
+                copied = copy_texture_with_sidecars(
+                    self.filepath,
+                    pack_root,
+                    texture_id,
+                    reuse_candidates=reuse_candidates,
+                    preserve_existing_sidecars=self.target in {"OUTER", "INNER"},
+                )
             except (OSError, ValueError) as exc:
                 self.report({"ERROR"}, f"无法导入 PNG：{exc}")
                 return {"CANCELLED"}
@@ -2034,6 +2120,8 @@ if bpy is not None:
             actual = Path(copied[0]).resolve()
             actual_relative = actual.relative_to(assets_root).as_posix()
             texture_id = f"{namespace}:{actual_relative}"
+            if self.target in {"OUTER", "INNER"}:
+                carry_labpbr_sidecars(pack_root, old_id, texture_id)
             if self.target == "INNER":
                 node.inner_texture = texture_id
                 obj["halo_inner_texture_id"] = texture_id

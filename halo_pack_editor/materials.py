@@ -17,6 +17,12 @@ from typing import Iterable
 from .core.resource_paths import lowercase_resource_identifier
 
 
+LABPBR_SUFFIXES = {
+    "NORMAL": "_n",
+    "SPECULAR": "_s",
+}
+
+
 def split_resource_id(resource_id: str, default_namespace: str = "minecraft") -> tuple[str, str]:
     """Return ``(namespace, path)`` for a Minecraft resource identifier."""
 
@@ -50,6 +56,91 @@ def resolve_texture_path(texture_id: str, pack_root: str | os.PathLike[str] | No
         if png.is_file():
             return str(png)
     return None
+
+
+def labpbr_texture_id(base_texture_id: str, kind: str) -> str:
+    """Return the canonical labPBR sidecar ID for an albedo texture."""
+
+    base_texture_id = lowercase_resource_identifier(str(base_texture_id or "").strip())
+    if not base_texture_id:
+        raise ValueError("必须先选择固有色贴图")
+    suffix = LABPBR_SUFFIXES.get(str(kind or "").upper(), str(kind or "").lower())
+    if suffix not in LABPBR_SUFFIXES.values():
+        raise ValueError(f"未知的 labPBR 贴图类型：{kind}")
+    namespace, relative = split_resource_id(base_texture_id)
+    path = Path(relative)
+    if path.suffix and path.suffix.lower() != ".png":
+        raise ValueError("labPBR 仅支持 PNG 固有色贴图")
+    if not path.suffix:
+        path = path.with_suffix(".png")
+    return lowercase_resource_identifier(
+        f"{namespace}:{path.with_name(path.stem + suffix + path.suffix).as_posix()}"
+    )
+
+
+def import_labpbr_texture(
+    source: str | os.PathLike[str],
+    pack_root: str | os.PathLike[str],
+    base_texture_id: str,
+    kind: str,
+) -> str:
+    """Import one labPBR map beside its existing albedo texture.
+
+    Unlike ordinary texture import this deliberately replaces an existing
+    sidecar: ``foo_n.png`` and ``foo_s.png`` are identities derived from
+    ``foo.png`` and therefore must never receive numeric suffixes.
+    """
+
+    source_path = Path(source).resolve()
+    if source_path.suffix.lower() != ".png" or not source_path.is_file():
+        raise ValueError("labPBR 贴图必须是现有 PNG 文件")
+    if resolve_texture_path(base_texture_id, pack_root) is None:
+        raise ValueError("请先为图元导入有效的固有色贴图")
+    sidecar_id = labpbr_texture_id(base_texture_id, kind)
+    destination = Path(texture_destination(pack_root, sidecar_id))
+    if source_path != destination.resolve():
+        shutil.copy2(source_path, destination)
+    source_meta = Path(str(source_path) + ".mcmeta")
+    destination_meta = Path(str(destination) + ".mcmeta")
+    if source_meta.is_file() and source_meta.resolve() != destination_meta.resolve():
+        shutil.copy2(source_meta, destination_meta)
+    elif not source_meta.is_file() and destination_meta.is_file():
+        destination_meta.unlink()
+    return sidecar_id
+
+
+def carry_labpbr_sidecars(
+    pack_root: str | os.PathLike[str],
+    old_base_texture_id: str,
+    new_base_texture_id: str,
+) -> list[str]:
+    """Copy an albedo's ``_n``/``_s`` maps to its replacement's family.
+
+    The old family is retained because another primitive may still reference
+    it.  Reachability pruning removes it during export once it is truly unused.
+    Existing sidecars shipped with the replacement albedo take precedence.
+    """
+
+    old_base = lowercase_resource_identifier(str(old_base_texture_id or "").strip())
+    new_base = lowercase_resource_identifier(str(new_base_texture_id or "").strip())
+    if not old_base or not new_base or old_base == new_base:
+        return []
+    copied: list[str] = []
+    for kind in LABPBR_SUFFIXES:
+        old_id = labpbr_texture_id(old_base, kind)
+        new_id = labpbr_texture_id(new_base, kind)
+        source = resolve_texture_path(old_id, pack_root)
+        if source is None or resolve_texture_path(new_id, pack_root) is not None:
+            continue
+        destination = Path(texture_destination(pack_root, new_id))
+        shutil.copy2(source, destination)
+        copied.append(str(destination))
+        source_meta = Path(str(source) + ".mcmeta")
+        if source_meta.is_file():
+            destination_meta = Path(str(destination) + ".mcmeta")
+            shutil.copy2(source_meta, destination_meta)
+            copied.append(str(destination_meta))
+    return copied
 
 
 def _set_socket(node, names: Iterable[str], value):
@@ -124,8 +215,9 @@ def _configure_shader_backface_culling(
         (node for node in nodes if node.bl_idname == "ShaderNodeOutputMaterial" and node.is_active_output),
         next((node for node in nodes if node.bl_idname == "ShaderNodeOutputMaterial"), None),
     )
+    labpbr = nodes.get("Halo labPBR Surface")
     shader = next((node for node in nodes if node.bl_idname == "ShaderNodeBsdfPrincipled"), None)
-    if output is None or shader is None:
+    if output is None or (labpbr is None and shader is None):
         return False
 
     stored_backface_id = str(backface_texture_id or material.get("halo_backface_texture_id") or "")
@@ -153,7 +245,7 @@ def _configure_shader_backface_culling(
         links.remove(link)
 
     paired_texture = bool(stored_backface_id and backface_image is not None)
-    visible_shader = shader.outputs["BSDF"]
+    visible_shader = labpbr.outputs.get("Shader") if labpbr is not None else shader.outputs["BSDF"]
     if paired_texture or material.use_backface_culling:
         geometry = nodes.new("ShaderNodeNewGeometry")
         geometry.name = "Halo Backface Geometry"
@@ -164,7 +256,7 @@ def _configure_shader_backface_culling(
         mix.label = "Halo 内外面着色"
         mix.location = (390, 20)
         links.new(geometry.outputs["Backfacing"], mix.inputs[0])
-        links.new(shader.outputs["BSDF"], mix.inputs[1])
+        links.new(visible_shader, mix.inputs[1])
         visible_shader = mix.outputs["Shader"]
 
     if paired_texture:
@@ -389,6 +481,130 @@ def load_mask_image(texture_id: str, pack_root: str | os.PathLike[str] | None = 
     return pack_halo_image(image)
 
 
+def load_labpbr_image(texture_id: str, pack_root: str | os.PathLike[str] | None, kind: str):
+    """Load a labPBR data map with the color-management settings it requires."""
+
+    image = load_texture_image(texture_id, pack_root)
+    if image is None or image.get("halo_missing_texture"):
+        return image
+    try:
+        image.colorspace_settings.name = "Non-Color"
+    except TypeError:
+        pass
+    try:
+        image.alpha_mode = "CHANNEL_PACKED"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    image["halo_labpbr_kind"] = str(kind).upper()
+    return pack_halo_image(image)
+
+
+def reload_texture_image(texture_id: str, pack_root: str | os.PathLike[str] | None):
+    """Reload a just-replaced disk texture without touching unrelated images."""
+
+    import bpy
+
+    path = resolve_texture_path(texture_id, pack_root)
+    if path is None:
+        return False
+    target = os.path.normcase(os.path.abspath(path))
+    reloaded = False
+    for image in bpy.data.images:
+        image_path = image.get("halo_source_path") or getattr(image, "filepath", "")
+        if not image_path:
+            continue
+        resolved = os.path.normcase(os.path.abspath(bpy.path.abspath(image_path)))
+        if resolved != target:
+            continue
+        try:
+            image.reload()
+            pack_halo_image(image)
+            reloaded = True
+        except RuntimeError:
+            pass
+    return reloaded
+
+
+def materialize_generated_texture(texture_id: str, pack_root: str | os.PathLike[str] | None):
+    """Write a packed editor-generated albedo into its working pack on demand."""
+
+    import bpy
+
+    existing = resolve_texture_path(texture_id, pack_root)
+    if existing is not None:
+        return existing
+    if not pack_root:
+        return None
+    image = next((candidate for candidate in bpy.data.images
+                  if candidate.get("halo_texture_id") == texture_id
+                  and candidate.get("halo_generated_texture")
+                  and not candidate.get("halo_missing_texture")), None)
+    if image is None:
+        return None
+    pack_halo_image(image)
+    destination = Path(texture_destination(pack_root, texture_id))
+    if image.packed_file:
+        destination.write_bytes(bytes(image.packed_file.data))
+    elif image.has_data:
+        old_path = image.filepath_raw
+        old_format = image.file_format
+        try:
+            image.filepath_raw = str(destination)
+            image.file_format = "PNG"
+            image.save()
+        finally:
+            image.filepath_raw = old_path
+            image.file_format = old_format
+    return str(destination) if destination.is_file() else None
+
+
+def _apply_labpbr_preview(material, texture, alpha_multiply, texture_id, pack_root):
+    """Connect integrated labPBR 1.3 decoding when sidecars are available."""
+
+    if not str(texture_id or "").strip():
+        material["halo_labpbr_preview"] = False
+        return None
+    sidecars = {}
+    for kind in LABPBR_SUFFIXES:
+        sidecar_id = labpbr_texture_id(texture_id, kind)
+        if resolve_texture_path(sidecar_id, pack_root) is not None:
+            sidecars[kind] = sidecar_id
+    if not sidecars:
+        material["halo_labpbr_preview"] = False
+        return None
+
+    from .labpbr_preview import build_surface
+
+    nodes = material.node_tree.nodes
+    links = material.node_tree.links
+    surface = nodes.new("ShaderNodeGroup")
+    surface.name = "Halo labPBR Surface"
+    surface.label = "labPBR 1.3 预览"
+    surface.location = (80, 80)
+    surface.node_tree = build_surface()
+    links.new(texture.outputs["Color"], surface.inputs["Albedo Color"])
+    links.new(alpha_multiply.outputs[0], surface.inputs["Albedo Alpha"])
+
+    for index, kind in enumerate(("NORMAL", "SPECULAR")):
+        sidecar_id = sidecars.get(kind)
+        if sidecar_id is None:
+            continue
+        node = nodes.new("ShaderNodeTexImage")
+        node.name = f"Halo {kind.title()} Texture"
+        node.label = "法线贴图 (_n)" if kind == "NORMAL" else "高光贴图 (_s)"
+        node.location = (-500, -160 - index * 220)
+        node.image = load_labpbr_image(sidecar_id, pack_root, kind)
+        node.interpolation = "Linear" if kind == "NORMAL" else "Closest"
+        node.extension = "REPEAT"
+        input_prefix = "Normal" if kind == "NORMAL" else "Specular"
+        links.new(node.outputs["Color"], surface.inputs[f"{input_prefix} Color"])
+        links.new(node.outputs["Alpha"], surface.inputs[f"{input_prefix} Alpha"])
+        material[f"halo_labpbr_{kind.lower()}_id"] = sidecar_id
+
+    material["halo_labpbr_preview"] = True
+    return surface
+
+
 def create_halo_material(
     texture_id: str,
     pack_root: str | os.PathLike[str] | None = None,
@@ -425,6 +641,8 @@ def create_halo_material(
     shader = nodes.new("ShaderNodeBsdfPrincipled")
     shader.location = (80, 20)
     texture = nodes.new("ShaderNodeTexImage")
+    texture.name = "Halo Albedo Texture"
+    texture.label = "固有色贴图"
     texture.location = (-260, 20)
     texture.image = load_texture_image(texture_id, pack_root)
     texture.interpolation = "Linear"
@@ -448,6 +666,7 @@ def create_halo_material(
         links.new(texture.outputs.get("Color"), emission_socket)
     _set_socket(shader, ("Emission Strength",), 1.0 if glowing else 0.15)
     _set_socket(shader, ("Alpha",), float(alpha))
+    _apply_labpbr_preview(material, texture, alpha_multiply, texture_id, pack_root)
     paired_image = load_texture_image(backface_texture_id, pack_root) if backface_texture_id else None
     _configure_shader_backface_culling(material, backface_texture_id, paired_image, pack_root)
 
@@ -521,7 +740,11 @@ def assign_mesh_material(
         nodes = material.node_tree.nodes
         links = material.node_tree.links
         preview_alpha = nodes.get("Halo Preview Alpha")
-        base_texture = next((node for node in nodes if node.bl_idname == "ShaderNodeTexImage" and node.name != "Halo Backface Texture"), None)
+        base_texture = nodes.get("Halo Albedo Texture") or next(
+            (node for node in nodes
+             if node.bl_idname == "ShaderNodeTexImage" and node.name != "Halo Backface Texture"),
+            None,
+        )
         if preview_alpha is not None and base_texture is not None:
             for link in list(preview_alpha.inputs[0].links):
                 links.remove(link)
@@ -632,6 +855,7 @@ def copy_texture_with_sidecars(
     source: str, pack_root: str, texture_id: str, *, reuse_candidates: Iterable[str] = (),
     allow_missing_base: bool = False,
     other_pack_roots: Iterable[str] = (),
+    preserve_existing_sidecars: bool = False,
 ) -> list[str]:
     """Reuse identical material content; suffix only genuine name conflicts.
 
@@ -648,6 +872,19 @@ def copy_texture_with_sidecars(
     namespace_root = Path(pack_root).resolve() / "assets" / split_resource_id(texture_id)[0]
     family = _texture_family(source_path)
     signature = _texture_signature(family)
+    source_has_pbr = any(key.startswith(("_n", "_s", "_e")) for key in signature)
+
+    def matches(existing):
+        existing_signature = _texture_signature(existing)
+        if existing_signature == signature:
+            return True
+        return bool(
+            preserve_existing_sidecars
+            and not source_has_pbr
+            and "" in signature
+            and all(existing_signature.get(key) == value for key, value in signature.items())
+        )
+
     def conflicts_with_other_source(candidate):
         relative = candidate.relative_to(Path(pack_root).resolve())
         for other in other_pack_roots:
@@ -668,7 +905,7 @@ def copy_texture_with_sidecars(
             continue
         seen.add(candidate)
         existing_family = _texture_family(candidate)
-        if (existing_family and _texture_signature(existing_family) == signature
+        if (existing_family and matches(existing_family)
                 and not conflicts_with_other_source(candidate)):
             return [str(candidate), *(str(existing_family[key]) for key in family if key)]
     selected = destination
@@ -691,10 +928,17 @@ def copy_texture_with_sidecars(
 
 
 __all__ = [
+    "LABPBR_SUFFIXES",
     "split_resource_id",
     "resolve_texture_path",
+    "labpbr_texture_id",
+    "import_labpbr_texture",
+    "carry_labpbr_sidecars",
     "load_texture_image",
     "load_mask_image",
+    "load_labpbr_image",
+    "reload_texture_image",
+    "materialize_generated_texture",
     "create_halo_material",
     "assign_material",
     "assign_primitive_materials",

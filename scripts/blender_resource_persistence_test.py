@@ -112,7 +112,12 @@ if mode == "prepare":
     assert bpy.ops.halo.import_texture(filepath=str(external), target="INNER") == {"FINISHED"}
     assert local_ring.halo_node.texture == local_ring.halo_node.inner_texture == local_id
     assert len(bpy.data.images) == image_count
-    assert all(image == local_image for image in node_images(local_ring))
+    ring_images = node_images(local_ring)
+    assert {image.get("halo_texture_id") for image in ring_images} == {
+        local_id,
+        "demo:textures/halo/local_n.png",
+    }
+    assert all(image == local_image for image in ring_images if image.get("halo_texture_id") == local_id)
     renamed = external.with_name("renamed.png")
     renamed.write_bytes(external.read_bytes())
     renamed.with_name("renamed_n.png").write_bytes(external.with_name("local_n.png").read_bytes())
@@ -169,10 +174,23 @@ elif mode == "reopen":
         assert source_files(source) == expected[source.source_id]
     folder_images = node_images(primitive(scene, "demo:folder"))
     zip_images = node_images(primitive(scene, "demo:zip"))
-    assert len(folder_images) == 2 and len(zip_images) == 1
-    assert folder_images[0] != zip_images[0]
-    assert folder_images[0].pixels[0] > 0.99 and zip_images[0].pixels[2] > 0.99
-    assert folder_images[1].pixels[1] > 0.99
+    folder_by_id = {image.get("halo_texture_id"): image for image in folder_images}
+    zip_by_id = {image.get("halo_texture_id"): image for image in zip_images}
+    assert set(folder_by_id) == {
+        "demo:textures/halo/shared.png",
+        "demo:textures/halo/shared_n.png",
+        "demo:textures/halo/shared_s.png",
+        "demo:textures/halo/inner.png",
+    }
+    assert set(zip_by_id) == {
+        "demo:textures/halo/shared.png",
+        "demo:textures/halo/shared_n.png",
+        "demo:textures/halo/shared_s.png",
+    }
+    assert folder_by_id["demo:textures/halo/shared.png"] != zip_by_id["demo:textures/halo/shared.png"]
+    assert folder_by_id["demo:textures/halo/shared.png"].pixels[0] > 0.99
+    assert zip_by_id["demo:textures/halo/shared.png"].pixels[2] > 0.99
+    assert folder_by_id["demo:textures/halo/inner.png"].pixels[1] > 0.99
     for obj in scene.objects:
         if obj.get("halo_role") == "primitive":
             operators._set_node_mesh(obj)
