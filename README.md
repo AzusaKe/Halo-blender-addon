@@ -6,7 +6,7 @@ Halo Pack Editor is a Blender 5.2 LTS extension for importing, previewing, editi
 
 ## Download and compatibility
 
-- Latest stable release: [`v0.5.1`](https://github.com/AzusaKe/Halo-blender-addon/releases/tag/v0.5.1), available from [GitHub Releases](https://github.com/AzusaKe/Halo-blender-addon/releases/latest).
+- Latest stable release: [`v0.5.2`](https://github.com/AzusaKe/Halo-blender-addon/releases/tag/v0.5.2), available from [GitHub Releases](https://github.com/AzusaKe/Halo-blender-addon/releases/latest). The current development build is `0.5.3`.
 - Host: Blender 5.2 LTS or newer.
 - Halo formats: full Billboard/Ring support for Halo 1.x and native OBJ Mesh support for Halo 2.x schema 1.1.0.
 - Generated resource-pack metadata targets Minecraft Java 1.20 through 26.3 and future formats by default, using the practical open upper bound `2147483647`. A compatible Halo mod build is still required in game; the bound should be revisited if Mojang changes the metadata contract.
@@ -27,6 +27,7 @@ Halo Pack Editor is a Blender 5.2 LTS extension for importing, previewing, editi
 - Convert ordinary Blender Mesh objects into nested Halo groups and Billboard primitives, using Cycles baking or optional direct UV sampling.
 - Preview transparent materials consistently in EEVEE and avoid coincident inner/outer Ring surfaces in Cycles.
 - Import per-primitive labPBR 1.3 normal (`_n`) and specular (`_s`) maps after an albedo is selected, and preview their decoded normal, AO, height, roughness, metal, porosity/SSS, and emission channels with the integrated node graph.
+- Edit the resource-pack description and import PNG/JPEG/WebP/BMP/TGA images as the root `pack.png`; an explicit cover is embedded with the `.blend` and wins over merged source covers.
 
 ## labPBR material workflow
 
@@ -65,7 +66,7 @@ Generated textures are packed into the `.blend` and materialized only when the r
 
 ## Installation
 
-1. Download `halo_pack_editor-0.5.1.zip` from the latest stable release, or use the `0.5.2` development build when testing labPBR editing.
+1. Download `halo_pack_editor-0.5.2.zip` from the latest stable release, or use the current `0.5.3` development build.
 2. Open **Edit → Preferences → Extensions** in Blender 5.2 LTS or newer.
 3. Choose **Install from Disk** and select the ZIP.
 4. Enable Halo Pack Editor.
@@ -73,7 +74,7 @@ Generated textures are packed into the `.blend` and materialized only when the r
 
 ## Basic workflow
 
-1. In the **Project** panel, import a resource-pack ZIP/folder or create a blank pack. Imports are appended to the current project rather than replacing it.
+1. In the **Project** panel, import a resource-pack ZIP/folder or create a blank pack. Imports are appended to the current project rather than replacing it. The **Resource Pack Info** box edits `pack.description` and imports/replaces the cover; **Restore Source Cover** removes the explicit override. The full `pack.mcmeta` JSON remains available for advanced metadata.
 2. Select a definition root, group, or primitive in the Outliner. The Halo sidebar changes to the corresponding graphical editor.
 3. Use the group transform controls for Minecraft position, YXZ rotation, and uniform scale. Managed Halo objects intentionally lock Blender's native G/R/S fields so unsavable transforms are not introduced accidentally.
 4. Edit primitive textures, optional labPBR maps, dimensions, Ring segments, `face_camera`, or Mesh-specific OBJ/material settings. A native Mesh can load an external OBJ or convert a regular Mesh from the current project. Geometry and materials refresh immediately.
@@ -120,11 +121,11 @@ The typed editor targets Halo 2.x schema `1.1.0` and remains compatible with Hal
 ```powershell
 python -m unittest discover -s tests -p 'test_*.py' -v
 blender --command extension validate halo_pack_editor
-blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.5.2.zip
+blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.5.3.zip
 ```
 
 Background Blender integration tests are under `scripts/`. Development and render caches belong under `F:\codex-cache\halo-blender-addon`; the installed extension does not depend on that path.
 
-The current release passes 51 pure-Python tests, Blender 5.2 background integration and save/reopen tests, EEVEE/Cycles render checks, and Java parser validation against five native Mesh definitions.
+The current source passes 57 pure-Python tests, Blender 5.2 background integration and save/reopen tests, EEVEE/Cycles render checks, and Java parser validation against five native Mesh definitions.
 
 See [compatibility details](docs/COMPATIBILITY.md), the [test report](docs/TEST_REPORT.md), and [known limitations](docs/KNOWN_ISSUES.md).

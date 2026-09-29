@@ -6,7 +6,7 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 
 ## 下载与版本
 
-- 最新稳定版：[`v0.5.1`](https://github.com/AzusaKe/Halo-blender-addon/releases/tag/v0.5.1)，也可前往 [GitHub Releases](https://github.com/AzusaKe/Halo-blender-addon/releases/latest) 获取可安装 ZIP；测试本次 labPBR 功能时使用 `0.5.2` 开发构建。
+- 最新稳定版：[`v0.5.2`](https://github.com/AzusaKe/Halo-blender-addon/releases/tag/v0.5.2)，也可前往 [GitHub Releases](https://github.com/AzusaKe/Halo-blender-addon/releases/latest) 获取可安装 ZIP；本分支当前开发构建为 `0.5.3`。
 - 宿主版本：Blender 5.2 LTS 或更新版本。
 - 资源格式：完整支持 Halo 1.x 的 Billboard/Ring，并支持 Halo 2.x schema 1.1.0 原生 OBJ Mesh、简易 Shader 与保持比例缩放。
 - Minecraft 资源包元数据默认覆盖 Java 1.20～26.3 及后续格式，采用实用开放上界 `2147483647`；实际游戏加载仍需安装相应版本的 Halo 模组，Mojang 若再次修改元数据规则则需要跟进调整。
@@ -35,6 +35,7 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 - 在当前父级复制组或图元；也可把图元迁移到目标父级下自动创建的属性副本组中。
 - 把当前 Blender 场景中的普通 Mesh 按面转换为 Halo 子组和 Billboard，并通过 Cycles 烘焙或可选的直接 UV 采样生成透明 PNG。
 - 图元先选择有效固有色后，可分别导入 labPBR 1.3 法线贴图（`_n`）和高光贴图（`_s`），并在 Blender 中预览解码后的法线、高度、AO、粗糙度、金属、多孔性/SSS 与自发光。
+- 在项目面板编辑资源包描述，并导入 PNG/JPEG/WebP/BMP/TGA 作为 `pack.png` 封面；自定义封面随 `.blend` 保存并在多来源合并导出时优先使用。
 
 ## labPBR 材质
 
@@ -47,7 +48,7 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 
 1. 使用 Blender 5.2 LTS 或更新版本。
 2. 打开“编辑 → 偏好设置 → 扩展”，选择“从磁盘安装”。
-3. 选择稳定版 `halo_pack_editor-0.5.1.zip`，或本次功能的 `halo_pack_editor-0.5.2.zip` 开发构建，并启用扩展。
+3. 选择稳定版 `halo_pack_editor-0.5.2.zip`，或本次功能的 `halo_pack_editor-0.5.3.zip` 开发构建，并启用扩展。
 4. 在 3D 视图按 `N`，打开“Halo 光环”标签页。
 
 ## 保存工程与修复旧贴图（0.3.2）
@@ -75,7 +76,7 @@ Halo Pack Editor 是面向 Halo Minecraft 模组资源包的 Blender 5.2 LTS 扩
 
 ## 基本工作流
 
-1. 在“项目”面板选择“导入资源包 ZIP”或“导入资源包文件夹”。导入会追加到当前项目，不再清除已有来源和光环；可连续加入任意数量的 ZIP/文件夹。扩展先把每个来源复制/解包到 Blender 用户数据目录中的独立编辑缓存，贴图重链接和 Mesh 转换不会写回磁盘源包。新建光环归入“本地编辑资源”缓存。“资源包来源”列表中的“清除所选来源”会移除该来源及其光环，“清除光环”只移除定义列表中的当前光环，两者都不会修改磁盘源文件。若新导入或新建的 ID 已存在，后来者自动改为 `_2`、`_3` 等并显示警告。
+1. 在“项目”面板选择“导入资源包 ZIP”或“导入资源包文件夹”。导入会追加到当前项目，不再清除已有来源和光环；可连续加入任意数量的 ZIP/文件夹。扩展先把每个来源复制/解包到 Blender 用户数据目录中的独立编辑缓存，贴图重链接和 Mesh 转换不会写回磁盘源包。新建光环归入“本地编辑资源”缓存。“资源包来源”列表中的“清除所选来源”会移除该来源及其光环，“清除光环”只移除定义列表中的当前光环，两者都不会修改磁盘源文件。若新导入或新建的 ID 已存在，后来者自动改为 `_2`、`_3` 等并显示警告。“资源包信息”区域可编辑描述并导入/替换封面；非 PNG 图片会转换为 `pack.png`，点击“恢复来源封面”可取消自定义覆盖。高级完整 `pack.mcmeta` JSON 仍可直接编辑。
 2. 在中文 Blender 的“大纲视图”（默认布局右上角的对象树）中选择光环根、部件组或图元；3D 视图右侧栏中的属性面板会切换到对应编辑内容。若没有看到右侧栏，把鼠标移到 3D 视图后按 `N`，再点击右侧竖排的“Halo 光环”标签。
    - 在“光环属性”中修改 Definition ID 会原子更新当前选择、完整对象树、原始 JSON 与导出 ID；重命名后无需重新选择或重新导入。空 ID 和重复 ID 会被拒绝。
    - “光环属性”会显示当前定义完整层级中的图元总数；新增、删除、复制、迁移或 Mesh 转换后会随场景实时更新。
@@ -139,7 +140,7 @@ JSON 会统一输出为 UTF-8、两空格缩进；不保证原始空白逐字节
 ```powershell
 python -m unittest discover -s tests -p 'test_*.py' -v
 blender --command extension validate halo_pack_editor
-blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.5.2.zip
+blender --command extension build --source-dir halo_pack_editor --output-filepath dist\halo_pack_editor-0.5.3.zip
 ```
 
 Blender 后台集成测试脚本位于 `scripts/`。测试与下载缓存应放在 `F:\codex-cache\halo-blender-addon`，扩展自身不会依赖该路径。

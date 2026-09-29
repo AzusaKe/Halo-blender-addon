@@ -65,6 +65,7 @@ for root, marker, color, unknown in (
     definition_path.parent.mkdir(parents=True, exist_ok=True)
     definition_path.write_text(json.dumps(definition(marker)), encoding="utf-8")
     write_png(root / "assets/demo/textures/halo/shared.png", color)
+    write_png(root / "pack.png", color)
     (root / f"{marker}.txt").write_text(unknown, encoding="utf-8")
     (root / "pack.mcmeta").write_text(json.dumps({"pack": {"pack_format": 15, "description": "merge test"}}), encoding="utf-8")
 
@@ -130,6 +131,21 @@ local_source = next(source for source in project.sources if source.source_kind =
 assert project.definitions[2].source_id == local_source.source_id
 Path(local_source.pack_root, "local-only.txt").write_text("local edit", encoding="utf-8")
 
+# Resource-pack metadata has a dedicated editor, while unknown pack.mcmeta
+# fields and an explicit cover override must survive the merged export.
+manifest = json.loads(project.manifest_json)
+manifest["unknown_meta"] = {"keep": True}
+project.manifest_json = json.dumps(manifest, ensure_ascii=False, indent=2)
+project.pack_description = "面板编辑后的描述"
+assert json.loads(project.manifest_json)["pack"]["description"] == "面板编辑后的描述"
+assert json.loads(project.manifest_json)["unknown_meta"] == {"keep": True}
+custom_cover = test_root / "custom-cover.png"
+write_png(custom_cover, (0.1, 0.8, 0.2, 1.0))
+custom_cover_bytes = custom_cover.read_bytes()
+assert bpy.ops.halo.import_pack_cover(filepath=str(custom_cover)) == {"FINISHED"}
+assert project.pack_cover_source_id == local_source.source_id
+assert Path(local_source.pack_root, *blender_scene.PROJECT_COVER_RELATIVE.parts).read_bytes() == custom_cover_bytes
+
 # Same resource ID in another Blender scene must not be touched by editor-only
 # visibility, rename, or removal in the active project scene.
 other_scene = bpy.data.scenes.new("Merge isolation scene")
@@ -153,7 +169,8 @@ merged_zip = test_root / "merged.zip"
 blender_scene.export_pack_from_scene(scene, merged_zip, zip_output=True)
 merged = import_pack(merged_zip)
 assert {item.identifier for item in merged.definitions} == {"demo:halo", "demo:halo_2", "demo:halo_3"}
-assert merged.pack_mcmeta["pack"]["description"] == "edited aggregate"
+assert merged.pack_mcmeta["pack"]["description"] == "面板编辑后的描述"
+assert merged.pack_mcmeta["unknown_meta"] == {"keep": True}
 assert merged.pack_mcmeta["pack"]["supported_formats"] == {
     "min_inclusive": 15,
     "max_inclusive": 2_147_483_647,
@@ -165,7 +182,16 @@ assert "local-only.txt" in merged.files
 assert all("visible" not in item.document.data for item in merged.definitions)
 with zipfile.ZipFile(merged_zip) as archive:
     definition_files = [name for name in archive.namelist() if "/halo_definitions/" in name and name.endswith(".json")]
+    assert archive.read("pack.png") == custom_cover_bytes
+    assert not any(name.startswith(".halo_pack_editor/") for name in archive.namelist())
 assert len(definition_files) == 3
+
+assert bpy.ops.halo.clear_pack_cover() == {"FINISHED"}
+restored_cover_zip = test_root / "restored-cover.zip"
+blender_scene.export_pack_from_scene(scene, restored_cover_zip, zip_output=True)
+with zipfile.ZipFile(restored_cover_zip) as archive:
+    assert archive.read("pack.png") == (zip_tree / "pack.png").read_bytes()
+    assert not any(name.startswith(".halo_pack_editor/") for name in archive.namelist())
 
 # Removing one local definition must not let a copied source JSON resurrect it.
 removed = blender_scene.remove_definition_from_scene(scene, 2)

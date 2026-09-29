@@ -223,8 +223,33 @@ if bpy is not None:
             if project.sources and 0 <= project.active_source_index < len(project.sources):
                 source = project.sources[project.active_source_index]
                 box.label(text=source.source_path, icon="FILE_FOLDER")
-            box.label(text="合并包元数据")
-            box.prop(project, "manifest_json", text="pack.mcmeta")
+            metadata = layout.box()
+            metadata.label(text="资源包信息", icon="PACKAGE")
+            metadata.prop(project, "pack_description", text="描述")
+            manifest_error = project.get("halo_manifest_error", "")
+            if manifest_error:
+                error_row = metadata.row()
+                error_row.alert = True
+                error_row.label(text=manifest_error, icon="ERROR")
+            try:
+                from .blender_scene import manifest_description_text
+                _description, is_component = manifest_description_text(project.manifest_json)
+            except Exception:
+                is_component = False
+            if is_component:
+                metadata.label(text="当前描述是 JSON 文本组件；编辑后将改为普通字符串", icon="INFO")
+            cover_row = metadata.row(align=True)
+            cover_row.operator("halo.import_pack_cover", text="导入/替换封面", icon="IMAGE_DATA")
+            clear_cover = cover_row.row(align=True)
+            clear_cover.enabled = bool(project.pack_cover_source_id)
+            clear_cover.operator("halo.clear_pack_cover", text="恢复来源封面", icon="LOOP_BACK")
+            if project.pack_cover_source_id:
+                metadata.label(text=f"自定义 pack.png：{project.pack_cover_name or '已导入'}", icon="CHECKMARK")
+            else:
+                metadata.label(text="未覆盖时沿用合并来源中的 pack.png", icon="INFO")
+            metadata.separator()
+            metadata.label(text="高级：完整 pack.mcmeta JSON")
+            metadata.prop(project, "manifest_json", text="")
             layout.template_list("HALO_UL_definitions", "definitions", project, "definitions", project, "active_definition_index", rows=3)
             row = layout.row(align=True)
             row.operator("halo.new_definition", text="新建光环", icon="ADD")

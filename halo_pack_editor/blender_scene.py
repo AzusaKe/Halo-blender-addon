@@ -47,6 +47,7 @@ ROOT_ROLE = "definition_root"
 GROUP_ROLE = "group"
 PRIMITIVE_ROLE = "primitive"
 HEAD_ROLE = "head_preview"
+PROJECT_COVER_RELATIVE = PurePosixPath(".halo_pack_editor/pack.png")
 DEFAULT_PACK_DESCRIPTION = "Halo Pack Editor export"
 OPEN_ENDED_MAX_PACK_FORMAT = 2_147_483_647
 LEGACY_DEFAULT_SUPPORTED_FORMATS = {"min_inclusive": 15, "max_inclusive": 88}
@@ -95,6 +96,45 @@ def _complete_manifest(value: Any) -> dict[str, Any]:
         pack["description"] = DEFAULT_PACK_DESCRIPTION
     manifest["pack"] = pack
     return manifest
+
+
+def manifest_description_text(value: Any) -> tuple[str, bool]:
+    """Return an editable description and whether it was a JSON component.
+
+    Minecraft also accepts structured text components for ``description``.
+    The regular project field is intentionally a plain-text convenience
+    editor, while the existing full ``pack.mcmeta`` field remains lossless.
+    """
+
+    manifest = value
+    if isinstance(value, str):
+        try:
+            manifest = json.loads(value or "{}")
+        except (TypeError, ValueError):
+            return DEFAULT_PACK_DESCRIPTION, False
+    pack = manifest.get("pack") if isinstance(manifest, Mapping) else None
+    description = pack.get("description") if isinstance(pack, Mapping) else None
+    if isinstance(description, str):
+        return description, False
+    if description is not None:
+        return json.dumps(description, ensure_ascii=False, separators=(",", ":")), True
+    return DEFAULT_PACK_DESCRIPTION, False
+
+
+def manifest_with_description(value: Any, description: str) -> dict[str, Any]:
+    """Set a plain-text description without dropping other metadata keys."""
+
+    manifest = value
+    if isinstance(value, str):
+        manifest = json.loads(value or "{}")
+    if not isinstance(manifest, Mapping):
+        raise ValueError("pack.mcmeta 根节点必须是 JSON 对象")
+    result = _json_copy(dict(manifest))
+    current_pack = result.get("pack")
+    pack = _json_copy(dict(current_pack)) if isinstance(current_pack, Mapping) else {}
+    pack["description"] = str(description)
+    result["pack"] = pack
+    return result
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -785,6 +825,8 @@ def import_project_to_scene(context, path: str | os.PathLike[str], replace: bool
     if replace:
         project.definitions.clear()
         project.sources.clear()
+        project.pack_cover_source_id = ""
+        project.pack_cover_name = ""
         # Remove only objects managed by this addon; user objects remain intact.
         for obj in list(scene.objects):
             if obj.get("halo_role") in {ROOT_ROLE, GROUP_ROLE, PRIMITIVE_ROLE}:
@@ -880,6 +922,9 @@ def remove_source_from_scene(scene, index: int) -> tuple[str, list[str]]:
     for definition_index in reversed(range(len(project.definitions))):
         if project.definitions[definition_index].source_id == source_id:
             project.definitions.remove(definition_index)
+    if project.pack_cover_source_id == source_id:
+        project.pack_cover_source_id = ""
+        project.pack_cover_name = ""
     project.sources.remove(index)
     project.active_source_index = min(index, max(0, len(project.sources) - 1))
     _refresh_source_counts(project)
@@ -1285,6 +1330,24 @@ def _copy_project_sources_to_temp(scene, destination: str) -> None:
             raise FileNotFoundError(f"资源包来源不可用：{source.name or source_path}")
 
 
+def _overlay_project_cover(scene, destination: Path) -> None:
+    """Apply the explicitly selected project cover after source merging."""
+
+    project = scene.halo_project
+    source_id = str(getattr(project, "pack_cover_source_id", "") or "")
+    if not source_id:
+        shutil.rmtree(destination / PROJECT_COVER_RELATIVE.parent, ignore_errors=True)
+        return
+    source = next((item for item in project.sources if item.source_id == source_id), None)
+    if source is None:
+        raise FileNotFoundError("自定义资源包封面的本地来源已被移除，请重新导入封面")
+    cover = Path(str(source.pack_root or ""), *PROJECT_COVER_RELATIVE.parts)
+    if not cover.is_file():
+        raise FileNotFoundError("自定义资源包封面 pack.png 缺失，请重新导入封面")
+    shutil.copy2(cover, destination / "pack.png")
+    shutil.rmtree(destination / PROJECT_COVER_RELATIVE.parent, ignore_errors=True)
+
+
 def _remove_staged_definition_files(destination: Path) -> None:
     """Prevent deleted/renamed source definitions from returning on export."""
 
@@ -1432,6 +1495,7 @@ def export_pack_from_scene(scene, target_path: str | os.PathLike[str], zip_outpu
     temporary = Path(tempfile.mkdtemp(prefix=".halo_pack_export_", dir=str(target.parent)))
     try:
         _copy_project_sources_to_temp(scene, str(temporary))
+        _overlay_project_cover(scene, temporary)
         _remove_staged_definition_files(temporary)
         manifest = _json_copy(DEFAULT_MANIFEST)
         try:
@@ -1570,6 +1634,8 @@ __all__ = [
     "import_definition_to_scene",
     "remove_definition_from_scene",
     "remove_source_from_scene",
+    "manifest_description_text",
+    "manifest_with_description",
     "sync_definition_from_scene",
     "sync_all_definitions",
     "reset_primitive_transform",

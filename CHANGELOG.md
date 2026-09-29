@@ -2,6 +2,19 @@
 
 本项目的重要变化记录于此。版本号与 GitHub Release 标签保持一致。
 
+## [0.5.3] - 2026-09-29
+
+### 新增
+
+- 在“项目 / 资源包”面板直接编辑最终 `pack.mcmeta` 的资源包描述，同时保留兼容范围及未知元数据。
+- 可导入 PNG、JPEG、WebP、BMP 或 TGA 作为资源包封面；非 PNG 图片自动转换并以根目录 `pack.png` 导出。
+- 自定义封面作为本地编辑资源随 `.blend` 内嵌，合并多个来源时始终作为最终覆盖层；也可一键恢复使用来源包封面。
+
+### 验证
+
+- 57 项纯 Python 测试通过。
+- Blender 5.2 多来源合并测试覆盖描述编辑、未知元数据保留、封面导入和 ZIP 导出。
+
 ## [0.5.2] - 2026-09-27
 
 ### 新增
@@ -37,6 +50,7 @@
 - 支持从当前 Blender 项目 Mesh 生成 Halo 2.x 原生三角 OBJ。
 - 增加直接图像导入与 Cycles 材质烘焙，并修复源 UV 与烘焙 UV 相互覆盖的问题。
 
+[0.5.3]: https://github.com/AzusaKe/Halo-blender-addon/releases/tag/v0.5.3
 [0.5.2]: https://github.com/AzusaKe/Halo-blender-addon/releases/tag/v0.5.2
 [0.5.1]: https://github.com/AzusaKe/Halo-blender-addon/releases/tag/v0.5.1
 [0.5.0]: https://github.com/AzusaKe/Halo-blender-addon/releases/tag/v0.5.0

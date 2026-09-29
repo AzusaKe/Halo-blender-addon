@@ -1,9 +1,16 @@
-# Halo Pack Editor 0.5.1 测试报告
+# Halo Pack Editor 测试报告
 
 测试日期：2026-09-16
 宿主：Blender 5.2.0 LTS（`fbe6228777e7`）  
 交付包：`dist/halo_pack_editor-0.5.1.zip`
 SHA-256：`C0D581860BBE3A15F6943864FE1FB6E78C3F7186FBC73B64FE2FA4E4652DABA2`
+
+## 0.5.3 开发构建：资源包描述与封面
+
+- “资源包信息”面板可直接修改最终 `pack.mcmeta` 的 `pack.description`；专项覆盖普通字符串、结构化 JSON 文本组件提示、非法 JSON 保护及未知顶层/pack 内字段保留。
+- PNG 封面原样复制，JPEG/WebP/BMP/TGA 经 Blender 转为根目录 `pack.png`；自定义封面保存在本地编辑来源中，随 `.blend` 资源快照持久化，并在多来源合并完成后作为最终覆盖层写入。可恢复使用来源包原封面。
+- 完整 `scripts/build.ps1` 通过：57 项纯 Python、Extension 源码/ZIP validate、Hina、原生 Mesh、Java 解析器、合并项目、动画、命名空间迁移、导出清理、六阶段资源持久化、保存重开及 EEVEE/Cycles 渲染全部通过。
+- 生成并验证 `dist/halo_pack_editor-0.5.3.zip`（SHA-256 `D4C740DD2473139040013959A7464AECE0C29BD78762B2D1BC4AB5B9BC5941F0`）；在隔离 Blender 用户目录 `F:\codex-cache\halo-blender-addon\isolated-0.5.3-final-a54995607ef242ac839d7397e2c836d1` 通过 `extension install-file` 和 `INSTALLED_PACKAGE_OK`，未覆盖用户安装。
 
 ## 0.5.2 开发构建：labPBR 图元材质
 

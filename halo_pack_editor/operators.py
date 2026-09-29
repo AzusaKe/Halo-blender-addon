@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any, Mapping
@@ -907,6 +908,8 @@ if bpy is not None:
             project.sources.clear()
             project.source_path = ""
             project.pack_root = ""
+            project.pack_cover_source_id = ""
+            project.pack_cover_name = ""
             project.manifest_json = json.dumps(blender_scene.DEFAULT_MANIFEST, ensure_ascii=False, indent=2)
             project.active_definition = ""
             local_source = blender_scene.ensure_local_source(context.scene)
@@ -1032,6 +1035,71 @@ if bpy is not None:
                 self.report({"WARNING"}, f"发现重名光环，已自动重命名：{summary}")
             else:
                 self.report({"INFO"}, "已追加资源包文件夹")
+            return {"FINISHED"}
+
+
+    class HALO_OT_import_pack_cover(bpy.types.Operator, ImportHelper):
+        bl_idname = "halo.import_pack_cover"
+        bl_label = "导入资源包封面"
+        bl_description = "导入图片并转换为最终资源包根目录的 pack.png"
+        bl_options = {"REGISTER", "UNDO"}
+
+        filename_ext = ".png"
+        filter_glob: StringProperty(
+            default="*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tga",
+            options={"HIDDEN"},
+        )
+
+        def execute(self, context):
+            source_path = Path(self.filepath).expanduser().resolve()
+            if not source_path.is_file():
+                self.report({"ERROR"}, "封面图片不存在")
+                return {"CANCELLED"}
+
+            image = None
+            try:
+                image = bpy.data.images.load(str(source_path), check_existing=False)
+                width, height = (int(image.size[0]), int(image.size[1]))
+                if width <= 0 or height <= 0:
+                    raise ValueError("图片尺寸无效")
+                local_source = blender_scene.ensure_local_source(context.scene)
+                target = Path(local_source.pack_root, *blender_scene.PROJECT_COVER_RELATIVE.parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if source_path.suffix.lower() == ".png":
+                    if source_path != target.resolve():
+                        shutil.copy2(source_path, target)
+                else:
+                    image.filepath_raw = str(target)
+                    image.file_format = "PNG"
+                    image.save()
+                project = context.scene.halo_project
+                project.pack_cover_source_id = local_source.source_id
+                project.pack_cover_name = source_path.name
+            except Exception as exc:
+                self.report({"ERROR"}, f"导入资源包封面失败：{exc}")
+                return {"CANCELLED"}
+            finally:
+                if image is not None:
+                    bpy.data.images.remove(image)
+
+            if width != height:
+                self.report({"WARNING"}, f"已导入 {width}×{height} 封面；建议使用正方形图片")
+            else:
+                self.report({"INFO"}, f"已导入 {width}×{height} 资源包封面")
+            return {"FINISHED"}
+
+
+    class HALO_OT_clear_pack_cover(bpy.types.Operator):
+        bl_idname = "halo.clear_pack_cover"
+        bl_label = "恢复来源封面"
+        bl_description = "移除自定义封面覆盖，导出时重新使用合并来源中最后一个 pack.png"
+        bl_options = {"REGISTER", "UNDO"}
+
+        def execute(self, context):
+            project = context.scene.halo_project
+            project.pack_cover_source_id = ""
+            project.pack_cover_name = ""
+            self.report({"INFO"}, "已恢复使用合并来源中的资源包封面")
             return {"FINISHED"}
 
 
@@ -3075,6 +3143,8 @@ if bpy is not None:
         HALO_OT_new_definition,
         HALO_OT_import_pack,
         HALO_OT_import_folder,
+        HALO_OT_import_pack_cover,
+        HALO_OT_clear_pack_cover,
         HALO_OT_remove_source,
         HALO_OT_remove_definition,
         HALO_OT_export_pack,

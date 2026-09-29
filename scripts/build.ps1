@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $extensionRoot = Join-Path $projectRoot 'halo_pack_editor'
 $distRoot = Join-Path $projectRoot 'dist'
-$packagePath = Join-Path $distRoot 'halo_pack_editor-0.5.2.zip'
+$packagePath = Join-Path $distRoot 'halo_pack_editor-0.5.3.zip'
 
 if (-not (Test-Path -LiteralPath $BlenderExe)) {
     throw "Blender 5.2 executable not found: $BlenderExe"

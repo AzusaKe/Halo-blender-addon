@@ -126,6 +126,30 @@ def _active_definition_index_update(self, context):
         pass
 
 
+def _pack_description_get(self):
+    """Expose pack.description as a convenient plain-text project field."""
+
+    try:
+        from .blender_scene import manifest_description_text
+        description, _is_component = manifest_description_text(self.manifest_json)
+        return description
+    except Exception:
+        return "Halo Pack Editor export"
+
+
+def _pack_description_set(self, value):
+    """Update only pack.description while preserving all other metadata."""
+
+    try:
+        from .blender_scene import manifest_with_description
+        manifest = manifest_with_description(self.manifest_json or "{}", str(value))
+    except Exception as exc:
+        self["halo_manifest_error"] = f"无法更新描述：{exc}"
+        return
+    self.manifest_json = json.dumps(manifest, ensure_ascii=False, indent=2)
+    self.pop("halo_manifest_error", None)
+
+
 def _definition_id_update(self, context):
     """Rename a definition and every scene/UI reference as one operation."""
 
@@ -618,6 +642,14 @@ if bpy is not None:
         pack_root: StringProperty(name="资源包目录", default="", subtype="DIR_PATH")
         source_path: StringProperty(name="导入源", default="", subtype="FILE_PATH")
         manifest_json: StringProperty(name="pack.mcmeta", default="")
+        pack_description: StringProperty(
+            name="资源包描述",
+            description="编辑最终导出 pack.mcmeta 的 pack.description；其他元数据保持不变",
+            get=_pack_description_get,
+            set=_pack_description_set,
+        )
+        pack_cover_source_id: StringProperty(name="封面来源 ID", default="", options={"HIDDEN"})
+        pack_cover_name: StringProperty(name="封面原文件名", default="", options={"HIDDEN"})
         schema_version: StringProperty(name="默认 Schema", default="1.1.0")
         output_path: StringProperty(name="导出路径", default="", subtype="FILE_PATH")
         active_definition: StringProperty(name="当前光环", default="")
